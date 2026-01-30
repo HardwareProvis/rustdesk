@@ -1,0 +1,42 @@
+name: Build Windows Client Only
+
+on:
+  workflow_dispatch:
+    inputs:
+      upload-artifact:
+        type: boolean
+        default: true
+      upload-tag:
+        type: string
+        default: "nightly"
+
+jobs:
+  x86_64-pc-windows-msvc:
+    name: Windows x64
+    runs-on: windows-2022
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          vcpkg install --triplet x64-windows-static-md
+          # Aquí el robot instala lo necesario para Windows
+
+      - name: Build RustDesk
+        env:
+          RS_PUB_KEY: ${{ secrets.RS_PUB_KEY }}
+          ID_SERVER: ${{ secrets.ID_SERVER }}
+          RELAY_SERVER: ${{ secrets.RELAY_SERVER }}
+        run: |
+          # Este es el comando que fabrica el .exe
+          python build.py --hw --flutter
+          
+      - name: Upload Artifact
+        if: github.event.inputs.upload-artifact == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: RustDesk-Windows-x64
+          path: |
+            target/release/rustdesk.exe
+            flutter/build/windows/runner/Release/*.exe
