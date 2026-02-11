@@ -12,7 +12,7 @@ jobs:
       - name: Install NASM & LLVM
         run: |
           choco install nasm llvm -y
-          # Añadimos LLVM al PATH para que bindgen lo encuentre
+          # Forzamos a que LLVM esté en el PATH del sistema
           echo "C:\Program Files\LLVM\bin" >> $env:GITHUB_PATH
 
       - name: Install Rust (v1.75)
@@ -23,14 +23,19 @@ jobs:
 
       - name: Setup vcpkg & Fix Opus
         run: |
-          vcpkg install libvpx:x64-windows-static libyuv:x64-windows-static opus:x64-windows-static
+          $env:VCPKG_DEFAULT_TRIPLET = "x64-windows-static"
+          vcpkg install libvpx libyuv opus
           vcpkg integrate install
           
-          # Crear estructura exacta que busca magnum-opus
+          # SOLUCIÓN DEFINITIVA AL ERROR DE CABECERAS:
+          # magnum-opus busca <opus/opus_multistream.h>. 
+          # Creamos la ruta física y aseguramos que los archivos estén ahí.
           $INC = "C:\vcpkg\installed\x64-windows-static\include"
           if (!(Test-Path "$INC\opus")) { New-Item -ItemType Directory -Path "$INC\opus" -Force }
           Copy-Item "$INC\*.h" "$INC\opus\" -ErrorAction SilentlyContinue
-          echo "Estructura de headers corregida."
+          
+          # Verificar que el archivo existe (esto saldrá en el log para confirmar)
+          if (Test-Path "$INC\opus\opus_multistream.h") { echo "Opus Headers corregidos con éxito" }
 
       - name: Hardcode Custom Configuration
         shell: bash
@@ -50,19 +55,19 @@ jobs:
           $env:VCPKG_ROOT = "C:\vcpkg"
           $env:VCPKG_INSTALLED = "$env:VCPKG_ROOT\installed\x64-windows-static"
           
-          # Variables de entorno para Rust y el Compilador de C
+          # Variables de entorno para Rust
           $env:LIBVPX_LIB_PATH = "$env:VCPKG_INSTALLED\lib"
           $env:LIBVPX_INCLUDE_PATH = "$env:VCPKG_INSTALLED\include"
           $env:OPUS_LIB_PATH = "$env:VCPKG_INSTALLED\lib"
           $env:OPUS_INCLUDE_PATH = "$env:VCPKG_INSTALLED\include"
           
-          # Estas 4 líneas son el "muro" contra el error de magnum-opus
+          # VARIABLES CRÍTICAS PARA BINDGEN/MAGNUM-OPUS
           $env:LIBCLANG_PATH = "C:\Program Files\LLVM\bin"
+          # CPATH y las variables de INCLUDE son las que lee el compilador de C directo
           $env:CPATH = "$env:VCPKG_INSTALLED\include"
-          $env:C_INCLUDE_PATH = "$env:VCPKG_INSTALLED\include"
-          $env:CPLUS_INCLUDE_PATH = "$env:VCPKG_INSTALLED\include"
+          $env:INCLUDE = "$env:VCPKG_INSTALLED\include"
           
-          # Compilar con el flag inline que usa el build oficial
+          # Compilar usando el flag oficial
           cargo build --release --bin rustdesk --features inline
 
       - name: Upload Binary
