@@ -20,47 +20,53 @@ jobs:
         with:
           targets: x86_64-pc-windows-msvc
 
-      - name: Setup vcpkg & Fix Opus Path
+      - name: Setup vcpkg & Fix Opus
         run: |
           # 1. Instalar dependencias
           vcpkg install libvpx:x64-windows-static libyuv:x64-windows-static opus:x64-windows-static
           vcpkg integrate install
           
-          # 2. CORRECCIÓN CRÍTICA: El compilador busca opus/opus.h
-          # vcpkg lo deja en include/, así que creamos la subcarpeta opus/ y movemos los .h
-          $includePath = "C:/vcpkg/installed/x64-windows-static/include"
-          mkdir -Force "$includePath/opus"
-          Copy-Item "$includePath/*.h" "$includePath/opus/"
-          echo "Estructura de Opus corregida."
+          # 2. Reestructurar Opus (Solución al error fatal)
+          $VCPKG_INC = "C:/vcpkg/installed/x64-windows-static/include"
+          if (!(Test-Path "$VCPKG_INC/opus")) {
+              New-Item -ItemType Directory -Path "$VCPKG_INC/opus" -Force
+          }
+          # Copiamos todos los archivos .h a la subcarpeta /opus/
+          Copy-Item "$VCPKG_INC/*.h" "$VCPKG_INC/opus/"
+          echo "Estructura de Opus reconstruida correctamente."
 
       - name: Hardcode Custom Configuration
         shell: bash
         run: |
           CONFIG_FILE="libs/hbb_common/src/config.rs"
-          # Inyectar servidores y llaves desde tus Secrets
-          sed -i 's/&\["rs-ny.rustdesk.com"\]/&["${{ secrets.MY_ID_SERVER }}"]/g' $CONFIG_FILE
-          sed -i 's/pub const RS_PUB_KEY: \&str = ".*";/pub const RS_PUB_KEY: \&str = "${{ secrets.MY_PUBLIC_KEY }}";/g' $CONFIG_FILE
+          # Inyectar valores de Secrets
+          sed -i "s|&\[\"rs-ny.rustdesk.com\"\]|&[\"${{ secrets.MY_ID_SERVER }}\"]|g" $CONFIG_FILE
+          sed -i "s|pub const RS_PUB_KEY: \&str = \".*\";|pub const RS_PUB_KEY: \&str = \"${{ secrets.MY_PUBLIC_KEY }}\";|g" $CONFIG_FILE
           
-          # Sobreescribir funciones para ignorar cualquier otra config
+          # Override de funciones para bloqueo total de servidores
           perl -i -0777 -pe 's/pub fn get_rendezvous_server\(\) -> String \{.*?\}/pub fn get_rendezvous_server() -> String { "${{ secrets.MY_ID_SERVER }}:21116".to_string() }/gs' $CONFIG_FILE
           perl -i -0777 -pe 's/pub fn get_relay_server\(\) -> String \{.*?\}/pub fn get_relay_server() -> String { "${{ secrets.MY_RELAY_SERVER }}:21117".to_string() }/gs' $CONFIG_FILE
 
       - name: Build with Cargo
-        shell: bash
+        shell: pwsh
         run: |
-          export VCPKG_ROOT="C:/vcpkg"
-          export VCPKG_INSTALLED="$VCPKG_ROOT/installed/x64-windows-static"
+          $env:VCPKG_ROOT = "C:/vcpkg"
+          $env:VCPKG_INSTALLED = "$env:VCPKG_ROOT/installed/x64-windows-static"
           
-          # Variables para que el compilador encuentre las rutas corregidas
-          export LIBVPX_LIB_PATH="$VCPKG_INSTALLED/lib"
-          export LIBVPX_INCLUDE_PATH="$VCPKG_INSTALLED/include"
-          export OPUS_LIB_PATH="$VCPKG_INSTALLED/lib"
-          export OPUS_INCLUDE_PATH="$VCPKG_INSTALLED/include"
-          export LIBCLANG_PATH="C:/Program Files/LLVM/bin"
+          # Variables para Rust
+          $env:LIBVPX_LIB_PATH = "$env:VCPKG_INSTALLED/lib"
+          $env:LIBVPX_INCLUDE_PATH = "$env:VCPKG_INSTALLED/include"
+          $env:OPUS_LIB_PATH = "$env:VCPKG_INSTALLED/lib"
+          $env:OPUS_INCLUDE_PATH = "$env:VCPKG_INSTALLED/include"
           
-          # Compilar el binario principal
+          # Variable crítica para Bindgen/Clang (magnum-opus)
+          $env:LIBCLANG_PATH = "C:/Program Files/LLVM/bin"
+          
+          # CPATH le dice al compilador de C dónde buscar cabeceras adicionales
+          $env:CPATH = "$env:VCPKG_INSTALLED/include"
+          
           cargo build --release --bin rustdesk
-          
+
       - name: Upload Binary
         uses: actions/upload-artifact@v4
         with:
