@@ -24,31 +24,44 @@ jobs:
         run: |
           vcpkg install libvpx:x64-windows-static libyuv:x64-windows-static opus:x64-windows-static
           vcpkg integrate install
+          
+          # TRUCO PARA EL ERROR DE OPUS:
+          # Creamos una carpeta 'opus' dentro de include si no existe y copiamos los archivos
+          # porque magnum-opus busca <opus/opus.h>
+          $opus_include = "C:/vcpkg/installed/x64-windows-static/include"
+          if (!(Test-Path "$opus_include/opus")) {
+              New-Item -ItemType Directory -Force -Path "$opus_include/opus"
+              Copy-Item -Path "$opus_include/*.h" -Destination "$opus_include/opus"
+          }
 
       - name: Hardcode Custom Configuration
         shell: bash
         run: |
           CONFIG_FILE="libs/hbb_common/src/config.rs"
-          
-          # 1. Modificar constantes de servidor y llave
+          # Inyectar servidores y llaves
           sed -i 's/&\["rs-ny.rustdesk.com"\]/&["${{ secrets.MY_ID_SERVER }}"]/g' $CONFIG_FILE
           sed -i 's/pub const RS_PUB_KEY: \&str = ".*";/pub const RS_PUB_KEY: \&str = "${{ secrets.MY_PUBLIC_KEY }}";/g' $CONFIG_FILE
-
-          # 2. Forzar funciones para que siempre devuelvan TU servidor (Hard Override)
-          # Esto borra el contenido de la función y pone tu IP directamente
+          # Overrides totales de funciones
           perl -i -0777 -pe 's/pub fn get_rendezvous_server\(\) -> String \{.*?\}/pub fn get_rendezvous_server() -> String { "${{ secrets.MY_ID_SERVER }}:21116".to_string() }/gs' $CONFIG_FILE
           perl -i -0777 -pe 's/pub fn get_relay_server\(\) -> String \{.*?\}/pub fn get_relay_server() -> String { "${{ secrets.MY_RELAY_SERVER }}:21117".to_string() }/gs' $CONFIG_FILE
 
       - name: Build with Cargo
         shell: bash
         run: |
-          # Variables críticas para que Rust encuentre las librerías de video y vcpkg
-          export VCPKG_ROOT=$VCPKG_INSTALLATION_ROOT
-          export LIBVPX_LIB_PATH="$VCPKG_ROOT/installed/x64-windows-static/lib"
+          export VCPKG_ROOT="C:/vcpkg"
+          export VCPKG_INSTALLED="$VCPKG_ROOT/installed/x64-windows-static"
           
-          # Compilación en modo release
+          # Variables de entorno para que el compilador encuentre todo
+          export LIBVPX_LIB_PATH="$VCPKG_INSTALLED/lib"
+          export LIBVPX_INCLUDE_PATH="$VCPKG_INSTALLED/include"
+          export OPUS_LIB_PATH="$VCPKG_INSTALLED/lib"
+          export OPUS_INCLUDE_PATH="$VCPKG_INSTALLED/include"
+          
+          # Clang es vital para Bindgen (magnum-opus lo usa)
+          export LIBCLANG_PATH="C:/Program Files/LLVM/bin"
+          
           cargo build --release --bin rustdesk
-
+          
       - name: Upload Binary
         uses: actions/upload-artifact@v4
         with:
