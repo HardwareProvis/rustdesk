@@ -29,12 +29,22 @@ jobs:
         run: |
           cargo fetch
           
-          $vcpkgRoot = $env:VCPKG_INSTALLATION_ROOT
-          $vcpkgInclude = "$vcpkgRoot\installed\x64-windows-static\include"
+          # DETECCIÓN DINÁMICA DE VCPKG
+          # Obtenemos la ruta del ejecutable y subimos niveles para hallar la raíz
+          $vcpkgExe = (Get-Command vcpkg).Source
+          $vcpkgRoot = Split-Path (Split-Path $vcpkgExe -Parent) -Parent
           
-          if (!(Test-Path $vcpkgInclude)) {
-              $vcpkgInclude = "C:\vcpkg\installed\x64-windows-static\include"
+          # Buscamos la carpeta de include de forma recursiva bajo la raíz hallada
+          $vcpkgInclude = Get-ChildItem -Path $vcpkgRoot -Filter "opus.h" -Recurse | 
+                          Where-Object { $_.FullName -like "*x64-windows-static*" } | 
+                          Select-Object -First 1 -ExpandProperty DirectoryName
+
+          if (-not $vcpkgInclude) {
+              Write-Error "No se pudo encontrar la carpeta de cabeceras de Opus en $vcpkgRoot"
+              exit 1
           }
+
+          Write-Host "Ruta de headers detectada: $vcpkgInclude"
 
           $cargoGit = "$env:USERPROFILE\.cargo\git\checkouts"
           $targetFiles = Get-ChildItem -Path $cargoGit -Filter "opus_ffi.h" -Recurse
@@ -43,7 +53,10 @@ jobs:
               $dir = $file.DirectoryName
               $opusDir = Join-Path $dir "opus"
               if (!(Test-Path $opusDir)) { New-Item -ItemType Directory -Path $opusDir -Force }
+              
+              # Copiamos los archivos .h a la carpeta del checkout
               Copy-Item "$vcpkgInclude\*.h" $opusDir -Force
+              Write-Host "Parcheado con éxito en: $opusDir"
           }
 
       - name: Hardcode Custom Configuration
@@ -58,9 +71,11 @@ jobs:
       - name: Build with Cargo
         shell: pwsh
         run: |
-          $vcpkgRoot = $env:VCPKG_INSTALLATION_ROOT
-          $vcpkgInstalled = "$vcpkgRoot\installed\x64-windows-static"
-          
+          # Re-detectamos la ruta para las variables de entorno del build
+          $vcpkgExe = (Get-Command vcpkg).Source
+          $vcpkgRoot = Split-Path (Split-Path $vcpkgExe -Parent) -Parent
+          $vcpkgInstalled = Get-ChildItem -Path $vcpkgRoot -Name "x64-windows-static" -Recurse -Directory | Select-Object -First 1 -ExpandProperty FullName
+
           $env:LIBCLANG_PATH = "C:\Program Files\LLVM\bin"
           $env:VCPKG_ROOT = $vcpkgRoot
           
