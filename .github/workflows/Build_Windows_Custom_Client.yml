@@ -1,0 +1,50 @@
+name: Build Windows Custom Client
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install vcpkg and Dependencies
+        run: |
+          vcpkg install libvpx:x64-windows-static libyuv:x64-windows-static opus:x64-windows-static
+
+      - name: Hardcode Custom Configuration
+        shell: bash
+        run: |
+          CONFIG_FILE="libs/hbb_common/src/config.rs"
+          
+          echo "Aplicando cambios en $CONFIG_FILE..."
+
+          # 1. Cambiar constantes básicas al inicio del archivo
+          sed -i 's/&\["rs-ny.rustdesk.com"\]/&["${{ secrets.MY_ID_SERVER }}"]/g' $CONFIG_FILE
+          sed -i 's/pub const RS_PUB_KEY: \&str = ".*";/pub const RS_PUB_KEY: \&str = "${{ secrets.MY_PUBLIC_KEY }}";/g' $CONFIG_FILE
+
+          # 2. Sobreescribir función get_rendezvous_server (Hard Override)
+          # Buscamos la función y reemplazamos todo su cuerpo
+          perl -i -0777 -pe 's/pub fn get_rendezvous_server\(\) -> String \{.*?\n    \}/pub fn get_rendezvous_server() -> String {\n        "${{ secrets.MY_ID_SERVER }}:21116".to_string()\n    }/gs' $CONFIG_FILE
+
+          # 3. Sobreescribir función get_relay_server (Hard Override)
+          perl -i -0777 -pe 's/pub fn get_relay_server\(\) -> String \{.*?\n    \}/pub fn get_relay_server() -> String {\n        "${{ secrets.MY_RELAY_SERVER }}:21117".to_string()\n    }/gs' $CONFIG_FILE
+
+          echo "Configuración hardcodeada con éxito."
+
+      - name: Build with Cargo
+        shell: bash
+        run: |
+          # RustDesk suele requerir estas variables para encontrar librerías en Windows
+          export VCPKG_ROOT=$VCPKG_INSTALLATION_ROOT
+          cargo build --release
+
+      - name: Upload Windows Binary
+        uses: actions/upload-artifact@v3
+        with:
+          name: RustDesk-Custom-Windows
+          path: target/release/rustdesk.exe
