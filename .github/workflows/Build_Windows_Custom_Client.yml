@@ -27,24 +27,23 @@ jobs:
 
       - name: Pre-fetch & Patch Magnum-Opus
         run: |
-          # 1. Forzamos a Cargo a descargar las dependencias sin compilar
           cargo fetch
           
-          # 2. Buscamos la carpeta exacta donde Cargo guardó magnum-opus
-          $vcpkgInclude = "C:\vcpkg\installed\x64-windows-static\include"
-          $cargoGit = "$env:USERPROFILE\.cargo\git\checkouts"
+          $vcpkgRoot = $env:VCPKG_INSTALLATION_ROOT
+          $vcpkgInclude = "$vcpkgRoot\installed\x64-windows-static\include"
           
-          # Buscamos todas las carpetas que contengan el archivo que falla
+          if (!(Test-Path $vcpkgInclude)) {
+              $vcpkgInclude = "C:\vcpkg\installed\x64-windows-static\include"
+          }
+
+          $cargoGit = "$env:USERPROFILE\.cargo\git\checkouts"
           $targetFiles = Get-ChildItem -Path $cargoGit -Filter "opus_ffi.h" -Recurse
           
           foreach ($file in $targetFiles) {
               $dir = $file.DirectoryName
               $opusDir = Join-Path $dir "opus"
               if (!(Test-Path $opusDir)) { New-Item -ItemType Directory -Path $opusDir -Force }
-              
-              # COPIA CRÍTICA: Metemos los headers de vcpkg dentro de la carpeta de la librería
               Copy-Item "$vcpkgInclude\*.h" $opusDir -Force
-              Write-Host "Parcheado magnum-opus en: $opusDir"
           }
 
       - name: Hardcode Custom Configuration
@@ -59,8 +58,18 @@ jobs:
       - name: Build with Cargo
         shell: pwsh
         run: |
+          $vcpkgRoot = $env:VCPKG_INSTALLATION_ROOT
+          $vcpkgInstalled = "$vcpkgRoot\installed\x64-windows-static"
+          
           $env:LIBCLANG_PATH = "C:\Program Files\LLVM\bin"
-          # Usamos offline porque ya descargamos y parcheamos todo arriba
+          $env:VCPKG_ROOT = $vcpkgRoot
+          
+          $env:LIBVPX_LIB_PATH = "$vcpkgInstalled\lib"
+          $env:LIBVPX_INCLUDE_PATH = "$vcpkgInstalled\include"
+          $env:OPUS_LIB_PATH = "$vcpkgInstalled\lib"
+          $env:OPUS_INCLUDE_PATH = "$vcpkgInstalled\include"
+          $env:INCLUDE = "$vcpkgInstalled\include"
+          
           cargo build --release --bin rustdesk --features inline --offline
 
       - name: Upload Binary
