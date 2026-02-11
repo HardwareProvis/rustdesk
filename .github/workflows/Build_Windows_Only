@@ -1,42 +1,62 @@
-name: Build Windows Client Only
-
+name: Build Windows Custom Client
 on:
   workflow_dispatch:
-    inputs:
-      upload-artifact:
-        type: boolean
-        default: true
-      upload-tag:
-        type: string
-        default: "nightly"
 
 jobs:
-  x86_64-pc-windows-msvc:
-    name: Windows x64
-    runs-on: windows-2022
+  build:
+    runs-on: windows-latest
     steps:
-      - name: Checkout
+      - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Install dependencies
-        run: |
-          vcpkg install --triplet x64-windows-static-md
-          # Aquí el robot instala lo necesario para Windows
+      - name: Install NASM
+        uses: ilammy/setup-nasm@v1
 
-      - name: Build RustDesk
-        env:
-          RS_PUB_KEY: ${{ secrets.RS_PUB_KEY }}
-          ID_SERVER: ${{ secrets.ID_SERVER }}
-          RELAY_SERVER: ${{ secrets.RELAY_SERVER }}
+      - name: Install LLVM
+        run: choco install llvm -y
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - name: Setup vcpkg
         run: |
-          # Este es el comando que fabrica el .exe
-          python build.py --hw --flutter
+          # Instalamos las dependencias necesarias
+          vcpkg install libvpx:x64-windows-static libyuv:x64-windows-static opus:x64-windows-static
+          vcpkg integrate install
+
+      - name: Hardcode Custom Configuration
+        shell: bash
+        run: |
+          CONFIG_FILE="libs/hbb_common/src/config.rs"
+          # Modificar constantes
+          sed -i 's/&\["rs-ny.rustdesk.com"\]/&["${{ secrets.MY_ID_SERVER }}"]/g' $CONFIG_FILE
+          sed -i 's/pub const RS_PUB_KEY: \&str = ".*";/pub const RS_PUB_KEY: \&str = "${{ secrets.MY_PUBLIC_KEY }}";/g' $CONFIG_FILE
+          # Overrides de funciones
+          perl -i -0777 -pe 's/pub fn get_rendezvous_server\(\) -> String \{.*?\}/pub fn get_rendezvous_server() -> String { "${{ secrets.MY_ID_SERVER }}:21116".to_string() }/gs' $CONFIG_FILE
+          perl -i -0777 -pe 's/pub fn get_relay_server\(\) -> String \{.*?\}/pub fn get_relay_server() -> String { "${{ secrets.MY_RELAY_SERVER }}:21117".to_string() }/gs' $CONFIG_FILE
+
+      - name: Build with Cargo
+        shell: bash
+        run: |
+          # VARIABLES CRÍTICAS PARA SOLUCIONAR EL ERROR DE OPUS
+          export VCPKG_ROOT="C:/vcpkg"
+          export VCPKG_INSTALLED="$VCPKG_ROOT/installed/x64-windows-static"
           
-      - name: Upload Artifact
-        if: github.event.inputs.upload-artifact == 'true'
+          # Estas variables le dicen al compilador dónde buscar Opus y VPX
+          export LIBVPX_LIB_PATH="$VCPKG_INSTALLED/lib"
+          export LIBVPX_INCLUDE_PATH="$VCPKG_INSTALLED/include"
+          export OPUS_LIB_PATH="$VCPKG_INSTALLED/lib"
+          export OPUS_INCLUDE_PATH="$VCPKG_INSTALLED/include"
+          
+          # Variable para clang (LLVM)
+          export LIBCLANG_PATH="C:/Program Files/LLVM/bin"
+          
+          cargo build --release --bin rustdesk
+          
+      - name: Upload Binary
         uses: actions/upload-artifact@v4
         with:
-          name: RustDesk-Windows-x64
-          path: |
-            target/release/rustdesk.exe
-            flutter/build/windows/runner/Release/*.exe
+          name: RustDesk-Custom-Windows
+          path: target/release/rustdesk.exe
