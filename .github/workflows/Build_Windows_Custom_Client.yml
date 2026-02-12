@@ -22,40 +22,38 @@ jobs:
 
       - name: Setup vcpkg
         run: |
+          # Solo instalamos para que el linker tenga los archivos .lib al final
           vcpkg install libvpx:x64-windows-static libyuv:x64-windows-static opus:x64-windows-static
           vcpkg integrate install
 
-      - name: Pre-fetch & Patch Magnum-Opus
+      - name: Pre-fetch & Force-Inject Opus Headers
         shell: pwsh
         run: |
           cargo fetch
           
-          # 1. Definimos la ruta de origen de vcpkg en GitHub Actions
-          $vcpkgInclude = "$env:VCPKG_INSTALLATION_ROOT\installed\x64-windows-static\include"
-          
-          # 2. Localizamos la carpeta de la dependencia magnum-opus en la caché de Cargo
+          # 1. Localizar la carpeta de la dependencia magnum-opus
           $cargoGit = "$env:USERPROFILE\.cargo\git\checkouts"
           $targetFiles = Get-ChildItem -Path $cargoGit -Filter "opus_ffi.h" -Recurse
           
+          # URL corregida (usando el mirror de RustDesk que es el que magnum-opus espera)
+          $baseUrl = "https://raw.githubusercontent.com/rustdesk-org/magnum-opus/main/opus_headers"
+          $files = @("opus.h", "opus_multistream.h", "opus_types.h", "opus_defines.h")
+          
           foreach ($file in $targetFiles) {
               $dir = $file.DirectoryName
-              Write-Host "Parcheando dependencia en: $dir"
+              Write-Host "Inyectando headers en: $dir"
               
-              # Creamos la subcarpeta 'opus' que el compilador busca específicamente
+              # Crear subcarpeta 'opus' (lo que pide el error de 'opus/opus_multistream.h')
               $opusSubDir = Join-Path $dir "opus"
               if (!(Test-Path $opusSubDir)) { New-Item -ItemType Directory -Path $opusSubDir -Force }
               
-              # Copiamos los headers a AMBOS sitios para asegurar el tiro
-              if (Test-Path "$vcpkgInclude\opus") {
-                  # Caso A: vcpkg tiene su propia subcarpeta opus
-                  Copy-Item "$vcpkgInclude\opus\*.h" $opusSubDir -Force
-                  Copy-Item "$vcpkgInclude\opus\*.h" $dir -Force
-              } else {
-                  # Caso B: los headers están en la raíz de include
-                  Copy-Item "$vcpkgInclude\*.h" $opusSubDir -Force
-                  Copy-Item "$vcpkgInclude\*.h" $dir -Force
+              foreach ($f in $files) {
+                  $dest = Join-Path $opusSubDir $f
+                  Write-Host "Descargando $f..."
+                  Invoke-WebRequest -Uri "$baseUrl/$f" -OutFile $dest -UseBasicParsing
+                  # Copiar también a la raíz de la dependencia por si acaso
+                  Copy-Item $dest -Destination (Join-Path $dir $f) -Force
               }
-              Write-Host "Headers inyectados en $dir y $opusSubDir"
           }
 
       - name: Hardcode Custom Configuration
@@ -70,20 +68,17 @@ jobs:
       - name: Build with Cargo
         shell: pwsh
         run: |
-          $vcpkgRoot = $env:VCPKG_INSTALLATION_ROOT
-          $vcpkgInstalled = "$vcpkgRoot\installed\x64-windows-static"
-          
-          # Variables de entorno para que el linker y el compilador no se pierdan
-          $env:VCPKG_ROOT = $vcpkgRoot
+          # Forzamos la variable que hizo fallar el intento anterior
+          $env:VCPKG_ROOT = $env:VCPKG_INSTALLATION_ROOT
           $env:LIBCLANG_PATH = "C:\Program Files\LLVM\bin"
-          $env:INCLUDE = "$vcpkgInstalled\include"
-          $env:CPATH = "$vcpkgInstalled\include"
-          $env:OPUS_LIB_PATH = "$vcpkgInstalled\lib"
-          $env:OPUS_INCLUDE_PATH = "$vcpkgInstalled\include"
-          $env:LIBVPX_LIB_PATH = "$vcpkgInstalled\lib"
-          $env:LIBVPX_INCLUDE_PATH = "$vcpkgInstalled\include"
           
-          Write-Host "Iniciando compilación con rutas forzadas..."
+          # Ignoramos vcpkg para los headers, ya los inyectamos arriba.
+          # Pero necesitamos las librerías para el linkado.
+          $vcpkgLib = "$env:VCPKG_INSTALLATION_ROOT\installed\x64-windows-static\lib"
+          $env:OPUS_LIB_PATH = $vcpkgLib
+          $env:LIBVPX_LIB_PATH = $vcpkgLib
+          
+          Write-Host "Iniciando compilación final..."
           cargo build --release --bin rustdesk --features inline
 
       - name: Upload Binary
