@@ -30,18 +30,19 @@ jobs:
         run: |
           cargo fetch
           
-          # 1. Localizar la carpeta de la dependencia magnum-opus
+          # 1. Localizamos la carpeta de la dependencia magnum-opus en el runner
           $cargoGit = "$env:USERPROFILE\.cargo\git\checkouts"
           $targetFiles = Get-ChildItem -Path $cargoGit -Filter "opus_ffi.h" -Recurse
           
-          # URLS OFICIALES DEL PROYECTO OPUS (XIPH)
+          # 2. URLs OFICIALES DE XIPH.ORG (Verificadas)
           $baseUrl = "https://raw.githubusercontent.com/xiph/opus/master/include"
           $files = @("opus.h", "opus_multistream.h", "opus_types.h", "opus_defines.h")
           
           foreach ($file in $targetFiles) {
               $dir = $file.DirectoryName
-              Write-Host "Inyectando headers en: $dir"
+              Write-Host "Inyectando en: $dir"
               
+              # Creamos la subcarpeta 'opus' que el compilador exige
               $opusSubDir = Join-Path $dir "opus"
               if (!(Test-Path $opusSubDir)) { New-Item -ItemType Directory -Path $opusSubDir -Force }
               
@@ -51,13 +52,13 @@ jobs:
                   Write-Host "Descargando desde $url..."
                   
                   try {
-                      # Descarga forzada con UseBasicParsing
+                      # Descarga forzada - Si esto da 404, el script se detiene aquí mismo
                       Invoke-WebRequest -Uri $url -OutFile $dest -UseBasicParsing -ErrorAction Stop
-                      # Copiamos también a la raíz porque magnum-opus a veces busca en ambos sitios
+                      # Copiamos también a la raíz por si acaso el linker busca de forma plana
                       Copy-Item $dest -Destination (Join-Path $dir $f) -Force
-                      Write-Host "Descargado: $f"
+                      Write-Host "Archivo $f inyectado con éxito."
                   } catch {
-                      Write-Error "Fallo en la URL: $url"
+                      Write-Error "ERROR CRÍTICO: No se pudo bajar $f. La URL ha fallado."
                       exit 1
                   }
               }
@@ -75,16 +76,16 @@ jobs:
       - name: Build with Cargo
         shell: pwsh
         run: |
-          # Declaramos VCPKG_ROOT para que el script de Rust no se queje
+          # Variables de entorno para que el build-script no busque en vcpkg lo que ya inyectamos
           $env:VCPKG_ROOT = $env:VCPKG_INSTALLATION_ROOT
           $env:LIBCLANG_PATH = "C:\Program Files\LLVM\bin"
           
-          # Rutas de librerías para el linker final
+          # Apuntamos a las librerías de vcpkg solo para el enlazado final (.lib)
           $vcpkgLib = "$env:VCPKG_INSTALLATION_ROOT\installed\x64-windows-static\lib"
           $env:OPUS_LIB_PATH = $vcpkgLib
           $env:LIBVPX_LIB_PATH = $vcpkgLib
           
-          Write-Host "Compilando con headers inyectados..."
+          Write-Host "Lanzando compilación pesada..."
           cargo build --release --bin rustdesk --features inline
 
       - name: Upload Binary
