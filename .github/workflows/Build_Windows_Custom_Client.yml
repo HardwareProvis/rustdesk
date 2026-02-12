@@ -22,39 +22,37 @@ jobs:
 
       - name: Setup vcpkg
         run: |
-          # Instalamos las demás, pero Opus lo manejaremos manual para evitar errores
           vcpkg install libvpx:x64-windows-static libyuv:x64-windows-static opus:x64-windows-static
           vcpkg integrate install
 
-      - name: Pre-fetch & Force Patch Opus
+      - name: Pre-fetch & Patch Magnum-Opus
         run: |
           cargo fetch
           
-          # 1. Localizar la carpeta de la dependencia magnum-opus
+          # 1. Localizar la carpeta de magnum-opus
           $cargoGit = "$env:USERPROFILE\.cargo\git\checkouts"
           $targetFiles = Get-ChildItem -Path $cargoGit -Filter "opus_ffi.h" -Recurse
           
+          # 2. Intentar encontrar la ruta de vcpkg de forma segura
+          $vcpkgPath = vcpkg integrate install | Select-String -Pattern 'C:\\.*\\scripts\\buildsystems\\vcpkg.cmake' | ForEach-Object { $_.Matches.Value }
+          $vcpkgRoot = $vcpkgPath.Replace("\scripts\buildsystems\vcpkg.cmake", "")
+          $sourceInclude = "$vcpkgRoot\installed\x64-windows-static\include"
+
           foreach ($file in $targetFiles) {
               $dir = $file.DirectoryName
-              $opusDir = Join-Path $dir "opus"
-              if (!(Test-Path $opusDir)) { New-Item -ItemType Directory -Path $opusDir -Force }
+              $opusDest = Join-Path $dir "opus"
+              if (!(Test-Path $opusDest)) { New-Item -ItemType Directory -Path $opusDest -Force }
               
-              Write-Host "Descargando headers directamente a $opusDir..."
-              
-              # 2. Descarga directa de los archivos necesarios desde la fuente de RustDesk
-              $baseUrl = "https://raw.githubusercontent.com/rustdesk-org/magnum-opus/main/opus_headers"
-              # Lista de archivos esenciales que busca magnum-opus
-              $files = @("opus.h", "opus_multistream.h", "opus_types.h", "opus_defines.h")
-              
-              foreach ($f in $files) {
-                  Invoke-WebRequest -Uri "$baseUrl/$f" -OutFile "$opusDir/$f" -ErrorAction SilentlyContinue
+              # Intentamos copiar desde la carpeta 'opus' o desde la raíz de include
+              if (Test-Path "$sourceInclude\opus\opus_multistream.h") {
+                  Copy-Item "$sourceInclude\opus\*.h" $opusDest -Force
+              } elseif (Test-Path "$sourceInclude\opus_multistream.h") {
+                  Copy-Item "$sourceInclude\*.h" $opusDest -Force
+              } else {
+                  Write-Error "No se encontraron los headers en $sourceInclude"
+                  exit 1
               }
-              
-              # Si la descarga anterior falló, usamos los de vcpkg por si acaso aparecieron
-              if (!(Test-Path "$opusDir/opus_multistream.h")) {
-                  $vcpkgRoot = vcpkg root
-                  Copy-Item "$env:VCPKG_INSTALLATION_ROOT\installed\x64-windows-static\include\opus\*.h" $opusDir -Force -ErrorAction SilentlyContinue
-              }
+              Write-Host "Headers copiados a $opusDest"
           }
 
       - name: Hardcode Custom Configuration
@@ -70,14 +68,6 @@ jobs:
         shell: pwsh
         run: |
           $env:LIBCLANG_PATH = "C:\Program Files\LLVM\bin"
-          $vcpkgInstalled = "$env:VCPKG_INSTALLATION_ROOT\installed\x64-windows-static"
-          
-          $env:INCLUDE = "$vcpkgInstalled\include"
-          $env:LIBVPX_LIB_PATH = "$vcpkgInstalled\lib"
-          $env:LIBVPX_INCLUDE_PATH = "$vcpkgInstalled\include"
-          $env:OPUS_LIB_PATH = "$vcpkgInstalled\lib"
-          $env:OPUS_INCLUDE_PATH = "$vcpkgInstalled\include"
-          
           cargo build --release --bin rustdesk --features inline --offline
 
       - name: Upload Binary
