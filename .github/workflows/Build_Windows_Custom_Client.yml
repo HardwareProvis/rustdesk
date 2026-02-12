@@ -12,6 +12,7 @@ jobs:
       - name: Install Dependencies
         run: |
           choco install nasm llvm -y
+          # Añadimos LLVM al path para que el compilador de C++ (Clang) funcione
           echo "C:\Program Files\LLVM\bin" >> $env:GITHUB_PATH
 
       - name: Install Rust (1.75)
@@ -22,16 +23,16 @@ jobs:
 
       - name: Setup vcpkg
         run: |
-          # Solo instalamos las que no dan problemas de cabeceras
-          vcpkg install libvpx:x64-windows-static libyuv:x64-windows-static
+          # Instalamos solo lo necesario. El 'integrate install' es clave para que Cargo vea vcpkg.
+          vcpkg install libvpx:x64-windows-static libyuv:x64-windows-static opus:x64-windows-static
           vcpkg integrate install
 
-      - name: Pre-fetch & Force Patch Magnum-Opus
+      - name: Pre-fetch & Patch Magnum-Opus
         shell: pwsh
         run: |
           cargo fetch
-          
-          # Buscamos la carpeta de la dependencia en el checkout de Cargo
+          # Este es el parche que inyecta los archivos de Opus directamente en la caché de Cargo
+          $vcpkgInclude = "$env:VCPKG_INSTALLATION_ROOT\installed\x64-windows-static\include"
           $cargoGit = "$env:USERPROFILE\.cargo\git\checkouts"
           $targetFiles = Get-ChildItem -Path $cargoGit -Filter "opus_ffi.h" -Recurse
           
@@ -39,22 +40,10 @@ jobs:
               $dir = $file.DirectoryName
               $opusDest = Join-Path $dir "opus"
               if (!(Test-Path $opusDest)) { New-Item -ItemType Directory -Path $opusDest -Force }
-              
-              Write-Host "Inyectando headers en: $opusDest"
-              
-              # Descargamos los 4 archivos críticos directamente desde el mirror oficial de Opus
-              $baseUrl = "https://raw.githubusercontent.com/xiph/opus/master/include"
-              $files = @("opus.h", "opus_multistream.h", "opus_types.h", "opus_defines.h")
-              
-              foreach ($f in $files) {
-                  $url = "$baseUrl/$f"
-                  Invoke-WebRequest -Uri $url -OutFile "$opusDest/$f"
-              }
-              
-              # Verificación rápida
-              if (Test-Path "$opusDest\opus_multistream.h") {
-                  Write-Host "Archivo opus_multistream.h inyectado correctamente."
-              }
+              # Copiamos los headers desde la carpeta de opus de vcpkg
+              Copy-Item "$vcpkgInclude\opus\*.h" $opusDest -Force -ErrorAction SilentlyContinue
+              # Si no estaban en la subcarpeta, probamos en la raíz
+              Copy-Item "$vcpkgInclude\*.h" $opusDest -Force -ErrorAction SilentlyContinue
           }
 
       - name: Hardcode Custom Configuration
@@ -69,9 +58,19 @@ jobs:
       - name: Build with Cargo
         shell: pwsh
         run: |
+          # DEFINICIÓN DE VARIABLES CRÍTICAS
+          $vcpkgRoot = $env:VCPKG_INSTALLATION_ROOT
+          $vcpkgInstalled = "$vcpkgRoot\installed\x64-windows-static"
+          
+          # Avisamos a Cargo y al build-script de magnum-opus dónde está todo
+          $env:VCPKG_ROOT = $vcpkgRoot
           $env:LIBCLANG_PATH = "C:\Program Files\LLVM\bin"
-          # Usamos la librería opus instalada por vcpkg para el linkado final, 
-          # pero los headers ya los inyectamos arriba manualmente.
+          $env:OPUS_LIB_PATH = "$vcpkgInstalled\lib"
+          $env:OPUS_INCLUDE_PATH = "$vcpkgInstalled\include"
+          $env:LIBVPX_LIB_PATH = "$vcpkgInstalled\lib"
+          $env:LIBVPX_INCLUDE_PATH = "$vcpkgInstalled\include"
+          
+          # Iniciamos el build
           cargo build --release --bin rustdesk --features inline
 
       - name: Upload Binary
