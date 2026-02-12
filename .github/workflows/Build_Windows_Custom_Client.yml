@@ -25,67 +25,45 @@ jobs:
           vcpkg install libvpx:x64-windows-static libyuv:x64-windows-static opus:x64-windows-static
           vcpkg integrate install
 
-      - name: Pre-fetch & Force-Inject Opus Headers
+      - name: Fix Opus Header Structure
         shell: pwsh
         run: |
-          cargo fetch
+          # El error ocurre porque magnum-opus busca <opus/header.h>
+          # vcpkg pone los headers en la raíz de /include, así que creamos la subcarpeta 'opus'
+          $includeDir = "$env:VCPKG_INSTALLATION_ROOT\installed\x64-windows-static\include"
+          $opusDir = Join-Path $includeDir "opus"
           
-          # 1. Localizamos la carpeta de la dependencia magnum-opus en el runner
-          $cargoGit = "$env:USERPROFILE\.cargo\git\checkouts"
-          $targetFiles = Get-ChildItem -Path $cargoGit -Filter "opus_ffi.h" -Recurse
-          
-          # 2. URLs OFICIALES DE XIPH.ORG (Verificadas)
-          $baseUrl = "https://raw.githubusercontent.com/xiph/opus/master/include"
-          $files = @("opus.h", "opus_multistream.h", "opus_types.h", "opus_defines.h")
-          
-          foreach ($file in $targetFiles) {
-              $dir = $file.DirectoryName
-              Write-Host "Inyectando en: $dir"
-              
-              # Creamos la subcarpeta 'opus' que el compilador exige
-              $opusSubDir = Join-Path $dir "opus"
-              if (!(Test-Path $opusSubDir)) { New-Item -ItemType Directory -Path $opusSubDir -Force }
-              
-              foreach ($f in $files) {
-                  $dest = Join-Path $opusSubDir $f
-                  $url = "$baseUrl/$f"
-                  Write-Host "Descargando desde $url..."
-                  
-                  try {
-                      # Descarga forzada - Si esto da 404, el script se detiene aquí mismo
-                      Invoke-WebRequest -Uri $url -OutFile $dest -UseBasicParsing -ErrorAction Stop
-                      # Copiamos también a la raíz por si acaso el linker busca de forma plana
-                      Copy-Item $dest -Destination (Join-Path $dir $f) -Force
-                      Write-Host "Archivo $f inyectado con éxito."
-                  } catch {
-                      Write-Error "ERROR CRÍTICO: No se pudo bajar $f. La URL ha fallado."
-                      exit 1
-                  }
-              }
+          if (!(Test-Path $opusDir)) { 
+              New-Item -ItemType Directory -Path $opusDir -Force 
           }
+          
+          # Copiamos todos los headers de opus a la subcarpeta requerida
+          Copy-Item -Path (Join-Path $includeDir "opus*.h") -Destination $opusDir -Force
+          Write-Host "Estructura de directorios de Opus corregida para bindgen."
 
       - name: Hardcode Custom Configuration
         shell: bash
         run: |
           CONFIG_FILE="libs/hbb_common/src/config.rs"
+          # Reemplazo de servidores predeterminados
           sed -i "s|&\[\"rs-ny.rustdesk.com\"\]|&[\"${{ secrets.MY_ID_SERVER }}\"]|g" $CONFIG_FILE
           sed -i "s|pub const RS_PUB_KEY: \&str = \".*\";|pub const RS_PUB_KEY: \&str = \"${{ secrets.MY_PUBLIC_KEY }}\";|g" $CONFIG_FILE
+          
+          # Forzar los métodos para que devuelvan tu servidor directamente
           perl -i -0777 -pe 's/pub fn get_rendezvous_server\(\) -> String \{.*?\}/pub fn get_rendezvous_server() -> String { "${{ secrets.MY_ID_SERVER }}:21116".to_string() }/gs' $CONFIG_FILE
           perl -i -0777 -pe 's/pub fn get_relay_server\(\) -> String \{.*?\}/pub fn get_relay_server() -> String { "${{ secrets.MY_RELAY_SERVER }}:21117".to_string() }/gs' $CONFIG_FILE
 
       - name: Build with Cargo
         shell: pwsh
         run: |
-          # Variables de entorno para que el build-script no busque en vcpkg lo que ya inyectamos
-          $env:VCPKG_ROOT = $env:VCPKG_INSTALLATION_ROOT
+          # Variables para que el compilador encuentre LLVM y las librerías de vcpkg
           $env:LIBCLANG_PATH = "C:\Program Files\LLVM\bin"
+          $env:VCPKG_ROOT = $env:VCPKG_INSTALLATION_ROOT
           
-          # Apuntamos a las librerías de vcpkg solo para el enlazado final (.lib)
-          $vcpkgLib = "$env:VCPKG_INSTALLATION_ROOT\installed\x64-windows-static\lib"
-          $env:OPUS_LIB_PATH = $vcpkgLib
-          $env:LIBVPX_LIB_PATH = $vcpkgLib
+          # CPATH ayuda a bindgen a encontrar los headers corregidos en el paso anterior
+          $env:CPATH = "$env:VCPKG_INSTALLATION_ROOT\installed\x64-windows-static\include"
           
-          Write-Host "Lanzando compilación pesada..."
+          Write-Host "Iniciando compilación de RustDesk..."
           cargo build --release --bin rustdesk --features inline
 
       - name: Upload Binary
