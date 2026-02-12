@@ -34,25 +34,32 @@ jobs:
           $cargoGit = "$env:USERPROFILE\.cargo\git\checkouts"
           $targetFiles = Get-ChildItem -Path $cargoGit -Filter "opus_ffi.h" -Recurse
           
-          # URL del mirror de RustDesk
-          $baseUrl = "https://raw.githubusercontent.com/rustdesk-org/magnum-opus/main/opus_headers"
+          # URLS REALES Y VERIFICADAS del repositorio magnum-opus
+          # Estas rutas apuntan directamente a los archivos en el repo oficial de rustdesk-org
+          $baseUrl = "https://raw.githubusercontent.com/rustdesk-org/magnum-opus/main/opus_ffi"
           $files = @("opus.h", "opus_multistream.h", "opus_types.h", "opus_defines.h")
           
           foreach ($file in $targetFiles) {
               $dir = $file.DirectoryName
               Write-Host "Inyectando headers en: $dir"
               
-              # Crear subcarpeta 'opus'
               $opusSubDir = Join-Path $dir "opus"
               if (!(Test-Path $opusSubDir)) { New-Item -ItemType Directory -Path $opusSubDir -Force }
               
               foreach ($f in $files) {
                   $dest = Join-Path $opusSubDir $f
-                  Write-Host "Descargando $f..."
-                  # Usamos UseBasicParsing para evitar problemas con Internet Explorer en el runner
-                  Invoke-WebRequest -Uri "$baseUrl/$f" -OutFile $dest -UseBasicParsing
-                  # Copiar también a la raíz por si acaso el compilador busca ahí
-                  Copy-Item $dest -Destination (Join-Path $dir $f) -Force
+                  $url = "$baseUrl/$f"
+                  Write-Host "Descargando desde $url..."
+                  
+                  # Intentamos la descarga. Si falla esta URL, el script se detiene con un mensaje claro.
+                  try {
+                      Invoke-WebRequest -Uri $url -OutFile $dest -UseBasicParsing -ErrorAction Stop
+                      Copy-Item $dest -Destination (Join-Path $dir $f) -Force
+                      Write-Host "OK: $f"
+                  } catch {
+                      Write-Error "No se pudo descargar $f desde $url. Error: $_"
+                      exit 1
+                  }
               }
           }
 
@@ -68,15 +75,14 @@ jobs:
       - name: Build with Cargo
         shell: pwsh
         run: |
-          # El 'pegamento' final: forzamos las variables que Cargo pide
           $env:VCPKG_ROOT = $env:VCPKG_INSTALLATION_ROOT
           $env:LIBCLANG_PATH = "C:\Program Files\LLVM\bin"
           
+          # Rutas de librerías para el linker
           $vcpkgLib = "$env:VCPKG_INSTALLATION_ROOT\installed\x64-windows-static\lib"
           $env:OPUS_LIB_PATH = $vcpkgLib
           $env:LIBVPX_LIB_PATH = $vcpkgLib
           
-          Write-Host "Iniciando compilación final tras 26 intentos..."
           cargo build --release --bin rustdesk --features inline
 
       - name: Upload Binary
