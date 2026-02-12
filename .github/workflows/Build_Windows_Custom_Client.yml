@@ -26,33 +26,35 @@ jobs:
           vcpkg integrate install
 
       - name: Pre-fetch & Patch Magnum-Opus
+        shell: pwsh
         run: |
           cargo fetch
           
-          # 1. Localizar la carpeta de magnum-opus
+          # Usamos la variable oficial de GitHub para vcpkg
+          $vcpkgRoot = $env:VCPKG_INSTALLATION_ROOT
+          $sourceInclude = "$vcpkgRoot\installed\x64-windows-static\include"
+          
+          # Si no existe en esa ruta, probamos la ruta por defecto de vcpkg-action
+          if (!(Test-Path $sourceInclude)) {
+              $sourceInclude = "C:\vcpkg\installed\x64-windows-static\include"
+          }
+
           $cargoGit = "$env:USERPROFILE\.cargo\git\checkouts"
           $targetFiles = Get-ChildItem -Path $cargoGit -Filter "opus_ffi.h" -Recurse
           
-          # 2. Intentar encontrar la ruta de vcpkg de forma segura
-          $vcpkgPath = vcpkg integrate install | Select-String -Pattern 'C:\\.*\\scripts\\buildsystems\\vcpkg.cmake' | ForEach-Object { $_.Matches.Value }
-          $vcpkgRoot = $vcpkgPath.Replace("\scripts\buildsystems\vcpkg.cmake", "")
-          $sourceInclude = "$vcpkgRoot\installed\x64-windows-static\include"
-
           foreach ($file in $targetFiles) {
               $dir = $file.DirectoryName
               $opusDest = Join-Path $dir "opus"
               if (!(Test-Path $opusDest)) { New-Item -ItemType Directory -Path $opusDest -Force }
               
-              # Intentamos copiar desde la carpeta 'opus' o desde la raíz de include
+              # Copiamos desde donde estén los headers de opus
               if (Test-Path "$sourceInclude\opus\opus_multistream.h") {
                   Copy-Item "$sourceInclude\opus\*.h" $opusDest -Force
-              } elseif (Test-Path "$sourceInclude\opus_multistream.h") {
-                  Copy-Item "$sourceInclude\*.h" $opusDest -Force
+                  Write-Host "Copiado desde subcarpeta opus"
               } else {
-                  Write-Error "No se encontraron los headers en $sourceInclude"
-                  exit 1
+                  Copy-Item "$sourceInclude\*.h" $opusDest -Force
+                  Write-Host "Copiado desde raíz de include"
               }
-              Write-Host "Headers copiados a $opusDest"
           }
 
       - name: Hardcode Custom Configuration
@@ -68,7 +70,8 @@ jobs:
         shell: pwsh
         run: |
           $env:LIBCLANG_PATH = "C:\Program Files\LLVM\bin"
-          cargo build --release --bin rustdesk --features inline --offline
+          # Quitamos el modo offline para que Cargo pueda resolver cualquier detalle de última hora
+          cargo build --release --bin rustdesk --features inline
 
       - name: Upload Binary
         uses: actions/upload-artifact@v4
