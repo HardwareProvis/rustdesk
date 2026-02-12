@@ -12,7 +12,6 @@ jobs:
       - name: Install Dependencies
         run: |
           choco install nasm llvm -y
-          # Añadimos LLVM al path para que el compilador de C++ (Clang) funcione
           echo "C:\Program Files\LLVM\bin" >> $env:GITHUB_PATH
 
       - name: Install Rust (1.75)
@@ -23,7 +22,6 @@ jobs:
 
       - name: Setup vcpkg
         run: |
-          # Instalamos solo lo necesario. El 'integrate install' es clave para que Cargo vea vcpkg.
           vcpkg install libvpx:x64-windows-static libyuv:x64-windows-static opus:x64-windows-static
           vcpkg integrate install
 
@@ -31,19 +29,33 @@ jobs:
         shell: pwsh
         run: |
           cargo fetch
-          # Este es el parche que inyecta los archivos de Opus directamente en la caché de Cargo
+          
+          # 1. Definimos la ruta de origen de vcpkg en GitHub Actions
           $vcpkgInclude = "$env:VCPKG_INSTALLATION_ROOT\installed\x64-windows-static\include"
+          
+          # 2. Localizamos la carpeta de la dependencia magnum-opus en la caché de Cargo
           $cargoGit = "$env:USERPROFILE\.cargo\git\checkouts"
           $targetFiles = Get-ChildItem -Path $cargoGit -Filter "opus_ffi.h" -Recurse
           
           foreach ($file in $targetFiles) {
               $dir = $file.DirectoryName
-              $opusDest = Join-Path $dir "opus"
-              if (!(Test-Path $opusDest)) { New-Item -ItemType Directory -Path $opusDest -Force }
-              # Copiamos los headers desde la carpeta de opus de vcpkg
-              Copy-Item "$vcpkgInclude\opus\*.h" $opusDest -Force -ErrorAction SilentlyContinue
-              # Si no estaban en la subcarpeta, probamos en la raíz
-              Copy-Item "$vcpkgInclude\*.h" $opusDest -Force -ErrorAction SilentlyContinue
+              Write-Host "Parcheando dependencia en: $dir"
+              
+              # Creamos la subcarpeta 'opus' que el compilador busca específicamente
+              $opusSubDir = Join-Path $dir "opus"
+              if (!(Test-Path $opusSubDir)) { New-Item -ItemType Directory -Path $opusSubDir -Force }
+              
+              # Copiamos los headers a AMBOS sitios para asegurar el tiro
+              if (Test-Path "$vcpkgInclude\opus") {
+                  # Caso A: vcpkg tiene su propia subcarpeta opus
+                  Copy-Item "$vcpkgInclude\opus\*.h" $opusSubDir -Force
+                  Copy-Item "$vcpkgInclude\opus\*.h" $dir -Force
+              } else {
+                  # Caso B: los headers están en la raíz de include
+                  Copy-Item "$vcpkgInclude\*.h" $opusSubDir -Force
+                  Copy-Item "$vcpkgInclude\*.h" $dir -Force
+              }
+              Write-Host "Headers inyectados en $dir y $opusSubDir"
           }
 
       - name: Hardcode Custom Configuration
@@ -58,19 +70,20 @@ jobs:
       - name: Build with Cargo
         shell: pwsh
         run: |
-          # DEFINICIÓN DE VARIABLES CRÍTICAS
           $vcpkgRoot = $env:VCPKG_INSTALLATION_ROOT
           $vcpkgInstalled = "$vcpkgRoot\installed\x64-windows-static"
           
-          # Avisamos a Cargo y al build-script de magnum-opus dónde está todo
+          # Variables de entorno para que el linker y el compilador no se pierdan
           $env:VCPKG_ROOT = $vcpkgRoot
           $env:LIBCLANG_PATH = "C:\Program Files\LLVM\bin"
+          $env:INCLUDE = "$vcpkgInstalled\include"
+          $env:CPATH = "$vcpkgInstalled\include"
           $env:OPUS_LIB_PATH = "$vcpkgInstalled\lib"
           $env:OPUS_INCLUDE_PATH = "$vcpkgInstalled\include"
           $env:LIBVPX_LIB_PATH = "$vcpkgInstalled\lib"
           $env:LIBVPX_INCLUDE_PATH = "$vcpkgInstalled\include"
           
-          # Iniciamos el build
+          Write-Host "Iniciando compilación con rutas forzadas..."
           cargo build --release --bin rustdesk --features inline
 
       - name: Upload Binary
