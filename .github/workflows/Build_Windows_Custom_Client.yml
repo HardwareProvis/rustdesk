@@ -29,16 +29,18 @@ jobs:
         run: |
           cargo fetch
           
-          # Obtener la ruta real de vcpkg consultando al ejecutable
-          $vcpkgRoot = vcpkg root
-          $vcpkgInclude = Join-Path $vcpkgRoot "installed\x64-windows-static\include"
-          
-          # Verificar si la carpeta de Opus existe dentro de include
-          if (Test-Path "$vcpkgInclude\opus") {
-              $sourcePath = "$vcpkgInclude\opus"
-          } else {
-              $sourcePath = $vcpkgInclude
+          Write-Host "Buscando cabeceras de Opus en el sistema..."
+          # Buscamos opus.h ignorando errores de acceso en carpetas del sistema
+          $vcpkgInclude = Get-ChildItem -Path "C:\", "D:\" -Filter "opus.h" -Recurse -ErrorAction SilentlyContinue | 
+                          Where-Object { $_.FullName -like "*x64-windows-static*" } | 
+                          Select-Object -First 1 -ExpandProperty DirectoryName
+
+          if (-not $vcpkgInclude) {
+              Write-Error "No se encontró opus.h en ningún disco."
+              exit 1
           }
+
+          Write-Host "Ruta encontrada: $vcpkgInclude"
 
           $cargoGit = "$env:USERPROFILE\.cargo\git\checkouts"
           $targetFiles = Get-ChildItem -Path $cargoGit -Filter "opus_ffi.h" -Recurse
@@ -48,9 +50,9 @@ jobs:
               $opusDir = Join-Path $dir "opus"
               if (!(Test-Path $opusDir)) { New-Item -ItemType Directory -Path $opusDir -Force }
               
-              # Copiar archivos .h desde la ruta real detectada
-              Copy-Item "$sourcePath\*.h" $opusDir -Force
-              Write-Host "Parcheado con éxito en: $opusDir usando $sourcePath"
+              # Copiamos todos los .h a la carpeta que espera magnum-opus
+              Copy-Item "$vcpkgInclude\*.h" $opusDir -Force
+              Write-Host "Parcheado con éxito en: $opusDir"
           }
 
       - name: Hardcode Custom Configuration
@@ -65,17 +67,20 @@ jobs:
       - name: Build with Cargo
         shell: pwsh
         run: |
-          $vcpkgRoot = vcpkg root
-          $vcpkgInstalled = Join-Path $vcpkgRoot "installed\x64-windows-static"
+          # Re-localizar para las variables de entorno
+          $vcpkgInclude = Get-ChildItem -Path "C:\", "D:\" -Name "opus.h" -Recurse -ErrorAction SilentlyContinue | 
+                          Where-Object { $_ -like "*x64-windows-static*" } | Select-Object -First 1
+          
+          $vcpkgInstalled = if ($vcpkgInclude) { Split-Path (Split-Path (Get-Item $vcpkgInclude).FullName -Parent) -Parent } else { "" }
 
           $env:LIBCLANG_PATH = "C:\Program Files\LLVM\bin"
-          $env:VCPKG_ROOT = $vcpkgRoot
-          $env:INCLUDE = "$vcpkgInstalled\include"
-          
-          $env:LIBVPX_LIB_PATH = "$vcpkgInstalled\lib"
-          $env:LIBVPX_INCLUDE_PATH = "$vcpkgInstalled\include"
-          $env:OPUS_LIB_PATH = "$vcpkgInstalled\lib"
-          $env:OPUS_INCLUDE_PATH = "$vcpkgInstalled\include"
+          if ($vcpkgInstalled) {
+              $env:INCLUDE = "$vcpkgInstalled\include"
+              $env:LIBVPX_LIB_PATH = "$vcpkgInstalled\lib"
+              $env:LIBVPX_INCLUDE_PATH = "$vcpkgInstalled\include"
+              $env:OPUS_LIB_PATH = "$vcpkgInstalled\lib"
+              $env:OPUS_INCLUDE_PATH = "$vcpkgInstalled\include"
+          }
           
           cargo build --release --bin rustdesk --features inline --offline
 
