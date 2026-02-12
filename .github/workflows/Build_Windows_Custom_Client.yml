@@ -22,23 +22,16 @@ jobs:
 
       - name: Setup vcpkg
         run: |
-          vcpkg install libvpx:x64-windows-static libyuv:x64-windows-static opus:x64-windows-static
+          # Solo instalamos las que no dan problemas de cabeceras
+          vcpkg install libvpx:x64-windows-static libyuv:x64-windows-static
           vcpkg integrate install
 
-      - name: Pre-fetch & Patch Magnum-Opus
+      - name: Pre-fetch & Force Patch Magnum-Opus
         shell: pwsh
         run: |
           cargo fetch
           
-          # Usamos la variable oficial de GitHub para vcpkg
-          $vcpkgRoot = $env:VCPKG_INSTALLATION_ROOT
-          $sourceInclude = "$vcpkgRoot\installed\x64-windows-static\include"
-          
-          # Si no existe en esa ruta, probamos la ruta por defecto de vcpkg-action
-          if (!(Test-Path $sourceInclude)) {
-              $sourceInclude = "C:\vcpkg\installed\x64-windows-static\include"
-          }
-
+          # Buscamos la carpeta de la dependencia en el checkout de Cargo
           $cargoGit = "$env:USERPROFILE\.cargo\git\checkouts"
           $targetFiles = Get-ChildItem -Path $cargoGit -Filter "opus_ffi.h" -Recurse
           
@@ -47,13 +40,20 @@ jobs:
               $opusDest = Join-Path $dir "opus"
               if (!(Test-Path $opusDest)) { New-Item -ItemType Directory -Path $opusDest -Force }
               
-              # Copiamos desde donde estén los headers de opus
-              if (Test-Path "$sourceInclude\opus\opus_multistream.h") {
-                  Copy-Item "$sourceInclude\opus\*.h" $opusDest -Force
-                  Write-Host "Copiado desde subcarpeta opus"
-              } else {
-                  Copy-Item "$sourceInclude\*.h" $opusDest -Force
-                  Write-Host "Copiado desde raíz de include"
+              Write-Host "Inyectando headers en: $opusDest"
+              
+              # Descargamos los 4 archivos críticos directamente desde el mirror oficial de Opus
+              $baseUrl = "https://raw.githubusercontent.com/xiph/opus/master/include"
+              $files = @("opus.h", "opus_multistream.h", "opus_types.h", "opus_defines.h")
+              
+              foreach ($f in $files) {
+                  $url = "$baseUrl/$f"
+                  Invoke-WebRequest -Uri $url -OutFile "$opusDest/$f"
+              }
+              
+              # Verificación rápida
+              if (Test-Path "$opusDest\opus_multistream.h") {
+                  Write-Host "Archivo opus_multistream.h inyectado correctamente."
               }
           }
 
@@ -70,7 +70,8 @@ jobs:
         shell: pwsh
         run: |
           $env:LIBCLANG_PATH = "C:\Program Files\LLVM\bin"
-          # Quitamos el modo offline para que Cargo pueda resolver cualquier detalle de última hora
+          # Usamos la librería opus instalada por vcpkg para el linkado final, 
+          # pero los headers ya los inyectamos arriba manualmente.
           cargo build --release --bin rustdesk --features inline
 
       - name: Upload Binary
