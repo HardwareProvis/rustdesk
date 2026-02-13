@@ -12,6 +12,7 @@ jobs:
       - name: Install Dependencies
         run: |
           choco install nasm llvm -y
+          # Añadir LLVM al PATH es vital para que bindgen encuentre libclang
           echo "C:\Program Files\LLVM\bin" >> $env:GITHUB_PATH
 
       - name: Install Rust (1.75)
@@ -25,19 +26,19 @@ jobs:
           vcpkg install libvpx:x64-windows-static libyuv:x64-windows-static opus:x64-windows-static
           vcpkg integrate install
 
-      - name: Fix Opus Header Structure
+      - name: Fix Opus Header Hierarchy
         shell: pwsh
         run: |
           $vcpkgInclude = "$env:VCPKG_INSTALLATION_ROOT\installed\x64-windows-static\include"
           $opusDir = Join-Path $vcpkgInclude "opus"
           
-          # Crear carpeta 'opus' dentro de include
+          # Crear la carpeta 'opus' dentro de include para satisfacer el include <opus/xxx.h>
           if (!(Test-Path $opusDir)) { New-Item -ItemType Directory -Path $opusDir -Force }
           
-          # Copiar todos los archivos .h que empiecen por opus a la subcarpeta
+          # Copiamos todos los headers de opus a la subcarpeta
           Get-ChildItem -Path $vcpkgInclude -Filter "opus*.h" | Copy-Item -Destination $opusDir -Force
           
-          Write-Host "Headers de Opus organizados en: $opusDir"
+          Write-Host "Headers de Opus movidos a: $opusDir"
 
       - name: Hardcode Custom Configuration
         shell: bash
@@ -53,20 +54,24 @@ jobs:
         run: |
           $vcpkgRoot = "$env:VCPKG_INSTALLATION_ROOT\installed\x64-windows-static"
           
-          # 1. Rutas para el Linker de MSVC
+          # 1. Variables para el compilador de C++ (MSVC)
           $env:INCLUDE = "$vcpkgRoot\include"
           $env:LIB = "$vcpkgRoot\lib"
           
-          # 2. Rutas para Bindgen (Clang) - ESTO ES LO QUE ESTABA FALLANDO
-          # Añadimos la carpeta include de vcpkg como directorio de sistema para Clang
+          # 2. Variables para Bindgen (Clang) - ESTO SOLUCIONA EL ERROR 'FILE NOT FOUND'
           $env:LIBCLANG_PATH = "C:\Program Files\LLVM\bin"
+          # Forzamos a Clang a incluir la carpeta base de headers
           $env:BINDGEN_EXTRA_CLANG_ARGS = "-I$vcpkgRoot\include"
           
-          # 3. Variables de RustDesk / Magnum-Opus
+          # 3. Variables para magnum-opus / rustdesk
           $env:VCPKG_ROOT = $env:VCPKG_INSTALLATION_ROOT
           $env:VCPKGRS_DYNAMIC = "0"
           
-          Write-Host "Lanzando compilación con BINDGEN_EXTRA_CLANG_ARGS..."
+          # 4. Forzar que encuentre opus específicamente
+          $env:OPUS_LIB_PATH = "$vcpkgRoot\lib"
+          $env:OPUS_INCLUDE_PATH = "$vcpkgRoot\include"
+          
+          Write-Host "Iniciando compilación con rutas forzadas..."
           cargo build --release --bin rustdesk --features inline
 
       - name: Upload Binary
