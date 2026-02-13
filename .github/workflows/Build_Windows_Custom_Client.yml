@@ -28,45 +28,45 @@ jobs:
       - name: Fix Opus Header Structure
         shell: pwsh
         run: |
-          $includeDir = "$env:VCPKG_INSTALLATION_ROOT\installed\x64-windows-static\include"
-          $opusDir = Join-Path $includeDir "opus"
+          $vcpkgInclude = "$env:VCPKG_INSTALLATION_ROOT\installed\x64-windows-static\include"
+          $opusDir = Join-Path $vcpkgInclude "opus"
           
-          # Crear carpeta 'opus' si no existe
+          # Crear carpeta 'opus' dentro de include
           if (!(Test-Path $opusDir)) { New-Item -ItemType Directory -Path $opusDir -Force }
           
-          # Copiar headers de la raíz a la subcarpeta /opus/ exigida por magnum-opus
-          Get-ChildItem -Path $includeDir -Filter "opus*.h" | Copy-Item -Destination $opusDir -Force
+          # Copiar todos los archivos .h que empiecen por opus a la subcarpeta
+          Get-ChildItem -Path $vcpkgInclude -Filter "opus*.h" | Copy-Item -Destination $opusDir -Force
           
-          Write-Host "Estructura corregida: Ahora existe $opusDir con los archivos .h"
+          Write-Host "Headers de Opus organizados en: $opusDir"
 
       - name: Hardcode Custom Configuration
         shell: bash
         run: |
           CONFIG_FILE="libs/hbb_common/src/config.rs"
-          # 1. Reemplazar servidores por defecto
           sed -i "s|&\[\"rs-ny.rustdesk.com\"\]|&[\"${{ secrets.MY_ID_SERVER }}\"]|g" $CONFIG_FILE
           sed -i "s|pub const RS_PUB_KEY: \&str = \".*\";|pub const RS_PUB_KEY: \&str = \"${{ secrets.MY_PUBLIC_KEY }}\";|g" $CONFIG_FILE
-          
-          # 2. Forzar funciones para ignorar configuraciones dinámicas
           perl -i -0777 -pe 's/pub fn get_rendezvous_server\(\) -> String \{.*?\}/pub fn get_rendezvous_server() -> String { "${{ secrets.MY_ID_SERVER }}:21116".to_string() }/gs' $CONFIG_FILE
           perl -i -0777 -pe 's/pub fn get_relay_server\(\) -> String \{.*?\}/pub fn get_relay_server() -> String { "${{ secrets.MY_RELAY_SERVER }}:21117".to_string() }/gs' $CONFIG_FILE
 
       - name: Build with Cargo
         shell: pwsh
         run: |
-          # Variables críticas para Bindgen y MSVC
-          $env:LIBCLANG_PATH = "C:\Program Files\LLVM\bin"
           $vcpkgRoot = "$env:VCPKG_INSTALLATION_ROOT\installed\x64-windows-static"
           
-          # Estas variables obligan al build-script de magnum-opus a mirar en vcpkg
-          $env:VCPKG_ROOT = $env:VCPKG_INSTALLATION_ROOT
-          $env:LIBRARY_PATH = "$vcpkgRoot\lib"
+          # 1. Rutas para el Linker de MSVC
           $env:INCLUDE = "$vcpkgRoot\include"
+          $env:LIB = "$vcpkgRoot\lib"
           
-          # CPATH es para Clang (el que genera el error 'file not found')
-          $env:CPATH = "$vcpkgRoot\include"
+          # 2. Rutas para Bindgen (Clang) - ESTO ES LO QUE ESTABA FALLANDO
+          # Añadimos la carpeta include de vcpkg como directorio de sistema para Clang
+          $env:LIBCLANG_PATH = "C:\Program Files\LLVM\bin"
+          $env:BINDGEN_EXTRA_CLANG_ARGS = "-I$vcpkgRoot\include"
           
-          Write-Host "Iniciando compilación con rutas vinculadas..."
+          # 3. Variables de RustDesk / Magnum-Opus
+          $env:VCPKG_ROOT = $env:VCPKG_INSTALLATION_ROOT
+          $env:VCPKGRS_DYNAMIC = "0"
+          
+          Write-Host "Lanzando compilación con BINDGEN_EXTRA_CLANG_ARGS..."
           cargo build --release --bin rustdesk --features inline
 
       - name: Upload Binary
