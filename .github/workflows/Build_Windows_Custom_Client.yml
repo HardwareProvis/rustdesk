@@ -33,19 +33,26 @@ jobs:
           $opusDir = Join-Path $vcpkgInclude "opus"
           
           # Crear la carpeta 'opus' dentro de include para satisfacer el include <opus/xxx.h>
-          if (!(Test-Path $opusDir)) { New-Item -ItemType Directory -Path $opusDir -Force }
+          if (!(Test-Path $opusDir)) { 
+              New-Item -ItemType Directory -Path $opusDir -Force 
+          }
           
-          # Copiamos todos los headers de opus a la subcarpeta
+          # Copiamos todos los headers de opus a la subcarpeta. 
+          # Esto soluciona el error "opus/opus_multistream.h not found"
           Get-ChildItem -Path $vcpkgInclude -Filter "opus*.h" | Copy-Item -Destination $opusDir -Force
           
-          Write-Host "Headers de Opus movidos a: $opusDir"
+          Write-Host "Headers de Opus organizados en: $opusDir"
+          Get-ChildItem $opusDir | Select-Object Name
 
       - name: Hardcode Custom Configuration
         shell: bash
         run: |
           CONFIG_FILE="libs/hbb_common/src/config.rs"
+          # Reemplazo de servidores e inyección de Key
           sed -i "s|&\[\"rs-ny.rustdesk.com\"\]|&[\"${{ secrets.MY_ID_SERVER }}\"]|g" $CONFIG_FILE
           sed -i "s|pub const RS_PUB_KEY: \&str = \".*\";|pub const RS_PUB_KEY: \&str = \"${{ secrets.MY_PUBLIC_KEY }}\";|g" $CONFIG_FILE
+          
+          # Forzar retorno de funciones de servidor para que ignoren la configuración de la UI
           perl -i -0777 -pe 's/pub fn get_rendezvous_server\(\) -> String \{.*?\}/pub fn get_rendezvous_server() -> String { "${{ secrets.MY_ID_SERVER }}:21116".to_string() }/gs' $CONFIG_FILE
           perl -i -0777 -pe 's/pub fn get_relay_server\(\) -> String \{.*?\}/pub fn get_relay_server() -> String { "${{ secrets.MY_RELAY_SERVER }}:21117".to_string() }/gs' $CONFIG_FILE
 
@@ -53,25 +60,27 @@ jobs:
         shell: pwsh
         run: |
           $vcpkgRoot = "$env:VCPKG_INSTALLATION_ROOT\installed\x64-windows-static"
+          $vcpkgInclude = "$vcpkgRoot\include"
           
           # 1. Variables para el compilador de C++ (MSVC)
-          $env:INCLUDE = "$vcpkgRoot\include"
+          $env:INCLUDE = $vcpkgInclude
           $env:LIB = "$vcpkgRoot\lib"
           
-          # 2. Variables para Bindgen (Clang) - ESTO SOLUCIONA EL ERROR 'FILE NOT FOUND'
+          # 2. Variables para Bindgen (Clang) - IMPORTANTE PARA MAGNUM-OPUS
           $env:LIBCLANG_PATH = "C:\Program Files\LLVM\bin"
-          # Forzamos a Clang a incluir la carpeta base de headers
-          $env:BINDGEN_EXTRA_CLANG_ARGS = "-I$vcpkgRoot\include"
+          # CPATH ayuda a Clang a encontrar la carpeta de cabeceras de vcpkg
+          $env:CPATH = $vcpkgInclude
+          $env:BINDGEN_EXTRA_CLANG_ARGS = "-I$vcpkgInclude"
           
-          # 3. Variables para magnum-opus / rustdesk
+          # 3. Variables específicas de RustDesk / Vcpkg-rs
           $env:VCPKG_ROOT = $env:VCPKG_INSTALLATION_ROOT
           $env:VCPKGRS_DYNAMIC = "0"
           
-          # 4. Forzar que encuentre opus específicamente
+          # 4. Forzar rutas para el linker de Opus
           $env:OPUS_LIB_PATH = "$vcpkgRoot\lib"
-          $env:OPUS_INCLUDE_PATH = "$vcpkgRoot\include"
+          $env:OPUS_INCLUDE_PATH = $vcpkgInclude
           
-          Write-Host "Iniciando compilación con rutas forzadas..."
+          Write-Host "Iniciando compilación de RustDesk (esto puede tardar)..."
           cargo build --release --bin rustdesk --features inline
 
       - name: Upload Binary
