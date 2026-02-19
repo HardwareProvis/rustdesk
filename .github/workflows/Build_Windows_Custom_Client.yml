@@ -12,7 +12,6 @@ jobs:
       - name: Install Dependencies
         run: |
           choco install nasm llvm -y
-          # Añadir LLVM al PATH para que bindgen encuentre libclang.dll
           echo "C:\Program Files\LLVM\bin" >> $env:GITHUB_PATH
 
       - name: Install Rust (1.75)
@@ -31,14 +30,8 @@ jobs:
         run: |
           $vcpkgInclude = "C:\vcpkg\installed\x64-windows-static\include"
           $opusDir = Join-Path $vcpkgInclude "opus"
-          
-          # Crear carpeta 'opus' y copiar archivos para soportar <opus/header.h>
           if (!(Test-Path $opusDir)) { New-Item -ItemType Directory -Path $opusDir -Force }
           Get-ChildItem -Path $vcpkgInclude -Filter "opus*.h" | Copy-Item -Destination $opusDir -Force
-          
-          # Verificación visual en el log
-          Write-Host "Contenido de $opusDir :"
-          Get-ChildItem $opusDir | Select-Object Name
 
       - name: Hardcode Custom Configuration
         shell: bash
@@ -52,32 +45,35 @@ jobs:
       - name: Build with Cargo
         shell: pwsh
         run: |
-          # Definición de rutas absolutas
+          # 1. Detectar automáticamente las rutas de Visual Studio (Vital para stdlib.h)
+          $vsPath = &(Join-Path ${env:ProgramFiles(x86)} "Microsoft Visual Studio\Installer\vswhere.exe") -latest -property installationPath
+          $msvcPath = Get-ChildItem -Path (Join-Path $vsPath "VC\Tools\MSVC") | Sort-Object Name -Descending | Select-Object -First 1
+          $sdkPath = "C:\Program Files (x86)\Windows Kits\10\Include"
+          $sdkVer = Get-ChildItem -Path $sdkPath | Sort-Object Name -Descending | Select-Object -First 1
+          
           $vcpkgRoot = "C:\vcpkg\installed\x64-windows-static"
-          $vcpkgInclude = "$vcpkgRoot\include"
-          $vcpkgLib = "$vcpkgRoot\lib"
           
-          # 1. Variables para el compilador de C++ (MSVC)
-          $env:INCLUDE = "$vcpkgInclude;$env:INCLUDE"
-          $env:LIB = "$vcpkgLib;$env:LIB"
+          # 2. Configurar INCLUDE para MSVC y Clang
+          # Añadimos las rutas de vcpkg Y las del sistema para no perder stdlib.h
+          $env:INCLUDE = "$vcpkgRoot\include;" + 
+                         "$($msvcPath.FullName)\include;" + 
+                         "$sdkPath\$($sdkVer.Name)\ucrt;" + 
+                         "$sdkPath\$($sdkVer.Name)\shared;" + 
+                         "$sdkPath\$($sdkVer.Name)\um"
           
-          # 2. Variables críticas para Bindgen / Clang
+          $env:LIB = "$vcpkgRoot\lib;" + "$($msvcPath.FullName)\lib\x64"
+          
+          # 3. Variables para Bindgen / Clang
           $env:LIBCLANG_PATH = "C:\Program Files\LLVM\bin"
+          # Pasamos las rutas de inclusión a Clang explícitamente
+          $env:BINDGEN_EXTRA_CLANG_ARGS = "-I$vcpkgRoot\include"
           
-          # Esta variable es la más importante: le dice a Clang dónde buscar las carpetas
-          # Se pasan dos rutas: la raíz de include y la carpeta padre de vcpkg
-          $env:BINDGEN_EXTRA_CLANG_ARGS = "-I$vcpkgInclude -I$vcpkgRoot"
-          
-          # 3. Variables para magnum-opus y rustdesk-libraries
+          # 4. Variables RustDesk
           $env:VCPKGRS_DYNAMIC = "0"
           $env:VCPKG_ROOT = "C:\vcpkg"
-          $env:OPUS_LIB_PATH = "$vcpkgLib"
-          $env:OPUS_INCLUDE_PATH = "$vcpkgInclude"
+          $env:OPUS_LIB_PATH = "$vcpkgRoot\lib"
+          $env:OPUS_INCLUDE_PATH = "$vcpkgRoot\include"
           
-          # Forzar a pkg-config (si se usa) a mirar en vcpkg
-          $env:PKG_CONFIG_PATH = "$vcpkgLib\pkgconfig"
-
-          Write-Host "Iniciando compilación final..."
           cargo build --release --bin rustdesk --features inline
 
       - name: Upload Binary
