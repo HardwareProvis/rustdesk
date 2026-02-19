@@ -31,6 +31,7 @@ jobs:
           $vcpkgInclude = "C:\vcpkg\installed\x64-windows-static\include"
           $opusDir = Join-Path $vcpkgInclude "opus"
           if (!(Test-Path $opusDir)) { New-Item -ItemType Directory -Path $opusDir -Force }
+          # Copiamos los headers para que 'opus/opus.h' sea válido
           Get-ChildItem -Path $vcpkgInclude -Filter "opus*.h" | Copy-Item -Destination $opusDir -Force
 
       - name: Hardcode Custom Configuration
@@ -45,35 +46,38 @@ jobs:
       - name: Build with Cargo
         shell: pwsh
         run: |
-          # 1. Detectar automáticamente las rutas de Visual Studio (Vital para stdlib.h)
-          $vsPath = &(Join-Path ${env:ProgramFiles(x86)} "Microsoft Visual Studio\Installer\vswhere.exe") -latest -property installationPath
-          $msvcPath = Get-ChildItem -Path (Join-Path $vsPath "VC\Tools\MSVC") | Sort-Object Name -Descending | Select-Object -First 1
-          $sdkPath = "C:\Program Files (x86)\Windows Kits\10\Include"
-          $sdkVer = Get-ChildItem -Path $sdkPath | Sort-Object Name -Descending | Select-Object -First 1
+          # 1. LOCALIZACIÓN DINÁMICA DE SDK Y MSVC (Para evitar error de stdlib.h)
+          $vsPath = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -property installationPath
+          $msvcInclude = Get-ChildItem -Path "$vsPath\VC\Tools\MSVC" | Sort-Object Name -Descending | Select-Object -First 1
+          $sdkIncludeRoot = "C:\Program Files (x86)\Windows Kits\10\Include"
+          $sdkVer = Get-ChildItem -Path $sdkIncludeRoot | Sort-Object Name -Descending | Select-Object -First 1
           
           $vcpkgRoot = "C:\vcpkg\installed\x64-windows-static"
+          $vcpkgInclude = "$vcpkgRoot\include"
           
-          # 2. Configurar INCLUDE para MSVC y Clang
-          # Añadimos las rutas de vcpkg Y las del sistema para no perder stdlib.h
-          $env:INCLUDE = "$vcpkgRoot\include;" + 
-                         "$($msvcPath.FullName)\include;" + 
-                         "$sdkPath\$($sdkVer.Name)\ucrt;" + 
-                         "$sdkPath\$($sdkVer.Name)\shared;" + 
-                         "$sdkPath\$($sdkVer.Name)\um"
+          # 2. CONSTRUCCIÓN DE RUTAS DE INCLUSIÓN
+          # Combinamos vcpkg + MSVC + Windows SDK (UCRT, Shared, UM)
+          $paths = @(
+            $vcpkgInclude,
+            "$($msvcInclude.FullName)\include",
+            "$sdkIncludeRoot\$($sdkVer.Name)\ucrt",
+            "$sdkIncludeRoot\$($sdkVer.Name)\shared",
+            "$sdkIncludeRoot\$($sdkVer.Name)\um"
+          )
+          $env:INCLUDE = ($paths -join ";") + ";" + $env:INCLUDE
           
-          $env:LIB = "$vcpkgRoot\lib;" + "$($msvcPath.FullName)\lib\x64"
-          
-          # 3. Variables para Bindgen / Clang
+          # 3. VARIABLES PARA CLANG/BINDGEN
           $env:LIBCLANG_PATH = "C:\Program Files\LLVM\bin"
-          # Pasamos las rutas de inclusión a Clang explícitamente
-          $env:BINDGEN_EXTRA_CLANG_ARGS = "-I$vcpkgRoot\include"
+          # Pasamos todas las rutas de inclusión a Clang para que encuentre stdlib.h y opus/
+          $env:BINDGEN_EXTRA_CLANG_ARGS = ($paths | ForEach-Object { "-I$_" }) -join " "
           
-          # 4. Variables RustDesk
+          # 4. VARIABLES RUSTDESK
           $env:VCPKGRS_DYNAMIC = "0"
           $env:VCPKG_ROOT = "C:\vcpkg"
           $env:OPUS_LIB_PATH = "$vcpkgRoot\lib"
-          $env:OPUS_INCLUDE_PATH = "$vcpkgRoot\include"
+          $env:OPUS_INCLUDE_PATH = $vcpkgInclude
           
+          Write-Host "Rutas de inclusión configuradas: $env:INCLUDE"
           cargo build --release --bin rustdesk --features inline
 
       - name: Upload Binary
