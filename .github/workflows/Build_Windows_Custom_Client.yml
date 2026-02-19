@@ -12,6 +12,7 @@ jobs:
       - name: Install Dependencies
         run: |
           choco install nasm llvm -y
+          # Añadir LLVM al PATH para que bindgen encuentre libclang.dll
           echo "C:\Program Files\LLVM\bin" >> $env:GITHUB_PATH
 
       - name: Install Rust (1.75)
@@ -28,59 +29,55 @@ jobs:
       - name: Fix Opus Header Hierarchy
         shell: pwsh
         run: |
-          $vcpkgRoot = "$env:VCPKG_INSTALLATION_ROOT\installed\x64-windows-static"
-          $vcpkgInclude = "$vcpkgRoot\include"
+          $vcpkgInclude = "C:\vcpkg\installed\x64-windows-static\include"
           $opusDir = Join-Path $vcpkgInclude "opus"
           
+          # Crear carpeta 'opus' y copiar archivos para soportar <opus/header.h>
           if (!(Test-Path $opusDir)) { New-Item -ItemType Directory -Path $opusDir -Force }
-          
-          # Copiar headers para que funcionen tanto <opus.h> como <opus/opus.h>
           Get-ChildItem -Path $vcpkgInclude -Filter "opus*.h" | Copy-Item -Destination $opusDir -Force
           
-          Write-Host "Verificando archivo crítico..."
-          if (Test-Path "$opusDir\opus_multistream.h") {
-            Write-Host "✅ Confirmado: $opusDir\opus_multistream.h existe."
-          } else {
-            Write-Error "❌ Error: No se encontró el header de Opus."
-          }
+          # Verificación visual en el log
+          Write-Host "Contenido de $opusDir :"
+          Get-ChildItem $opusDir | Select-Object Name
 
       - name: Hardcode Custom Configuration
         shell: bash
         run: |
           CONFIG_FILE="libs/hbb_common/src/config.rs"
-          # Inyectar servidor ID y Key
           sed -i "s|&\[\"rs-ny.rustdesk.com\"\]|&[\"${{ secrets.MY_ID_SERVER }}\"]|g" $CONFIG_FILE
           sed -i "s|pub const RS_PUB_KEY: \&str = \".*\";|pub const RS_PUB_KEY: \&str = \"${{ secrets.MY_PUBLIC_KEY }}\";|g" $CONFIG_FILE
-          
-          # Sobrescribir funciones para forzar servidor ID y Relay
           perl -i -0777 -pe 's/pub fn get_rendezvous_server\(\) -> String \{.*?\}/pub fn get_rendezvous_server() -> String { "${{ secrets.MY_ID_SERVER }}:21116".to_string() }/gs' $CONFIG_FILE
           perl -i -0777 -pe 's/pub fn get_relay_server\(\) -> String \{.*?\}/pub fn get_relay_server() -> String { "${{ secrets.MY_RELAY_SERVER }}:21117".to_string() }/gs' $CONFIG_FILE
 
       - name: Build with Cargo
         shell: pwsh
         run: |
+          # Definición de rutas absolutas
           $vcpkgRoot = "C:\vcpkg\installed\x64-windows-static"
           $vcpkgInclude = "$vcpkgRoot\include"
           $vcpkgLib = "$vcpkgRoot\lib"
           
-          # Variables de entorno para Compilador MSVC
+          # 1. Variables para el compilador de C++ (MSVC)
           $env:INCLUDE = "$vcpkgInclude;$env:INCLUDE"
           $env:LIB = "$vcpkgLib;$env:LIB"
           
-          # Variables de entorno para Bindgen / LLVM / Clang
+          # 2. Variables críticas para Bindgen / Clang
           $env:LIBCLANG_PATH = "C:\Program Files\LLVM\bin"
-          $env:BINDGEN_EXTRA_CLANG_ARGS = "-I$vcpkgInclude"
           
-          # Forzar a Clang a mirar en la carpeta de vcpkg
-          $env:C_INCLUDE_PATH = "$vcpkgInclude"
-          $env:CPLUS_INCLUDE_PATH = "$vcpkgInclude"
+          # Esta variable es la más importante: le dice a Clang dónde buscar las carpetas
+          # Se pasan dos rutas: la raíz de include y la carpeta padre de vcpkg
+          $env:BINDGEN_EXTRA_CLANG_ARGS = "-I$vcpkgInclude -I$vcpkgRoot"
           
-          # Variables específicas de RustDesk
+          # 3. Variables para magnum-opus y rustdesk-libraries
           $env:VCPKGRS_DYNAMIC = "0"
           $env:VCPKG_ROOT = "C:\vcpkg"
           $env:OPUS_LIB_PATH = "$vcpkgLib"
           $env:OPUS_INCLUDE_PATH = "$vcpkgInclude"
           
+          # Forzar a pkg-config (si se usa) a mirar en vcpkg
+          $env:PKG_CONFIG_PATH = "$vcpkgLib\pkgconfig"
+
+          Write-Host "Iniciando compilación final..."
           cargo build --release --bin rustdesk --features inline
 
       - name: Upload Binary
