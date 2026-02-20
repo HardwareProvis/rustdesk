@@ -21,65 +21,59 @@ jobs:
           targets: x86_64-pc-windows-msvc
           components: rustfmt
 
-      - name: Setup vcpkg and Clean Manifest
+      - name: Setup vcpkg
         shell: pwsh
         run: |
-          # ELIMINAR EL MANIFIESTO para evitar conflictos con la instalación manual 
+          # Eliminar manifiesto para evitar el modo bloqueado
           if (Test-Path "vcpkg.json") { Remove-Item "vcpkg.json" -Force }
           
-          # Instalación clásica forzada
+          # Instalación forzada en modo clásico
           vcpkg install libvpx libyuv opus libaom --triplet x64-windows-static --classic
           vcpkg integrate install
           
-          # Localizar ruta de instalación de vcpkg
-          $vcpkgRoot = "C:\vcpkg\installed\x64-windows-static"
-          if (!(Test-Path "$vcpkgRoot\include")) {
-              $vcpkgRoot = "$env:VCPKG_INSTALLATION_ROOT\installed\x64-windows-static"
-          }
-          
-          echo "VCPKG_ROOT_DIR=$vcpkgRoot" >> $env:GITHUB_ENV
-          Write-Host "VCPKG localizado en: $vcpkgRoot"
+          $vRoot = "C:\vcpkg\installed\x64-windows-static"
+          echo "VCPKG_ROOT_DIR=$vRoot" >> $env:GITHUB_ENV
 
-      - name: Fix Headers and Paths (D: Drive)
+      - name: Fix Headers
         shell: pwsh
         run: |
-          $vendorDir = New-Item -ItemType Directory -Path "D:\a\rustdesk\vendor" -Force
-          $vcpkgInclude = "$env:VCPKG_ROOT_DIR\include"
+          # Crear carpeta vendor en D: para evitar espacios en rutas
+          $vendor = New-Item -ItemType Directory -Path "D:\a\rustdesk\vendor" -Force
+          $inc = "$env:VCPKG_ROOT_DIR\include"
           
-          if (Test-Path $vcpkgInclude) {
-              Copy-Item -Path "$vcpkgInclude\*" -Destination $vendorDir -Recurse -Force
+          if (Test-Path $inc) {
+              Copy-Item -Path "$inc\*" -Destination $vendor -Recurse -Force
           }
           
-          # Crear jerarquías requeridas por magnum-opus y scrap 
-          foreach ($codec in @("opus", "vpx", "aom")) {
-              $codecPath = New-Item -ItemType Directory -Path (Join-Path $vendorDir $codec) -Force
-              Get-ChildItem -Path $vendorDir -Filter "$codec*.h" | Copy-Item -Destination $codecPath -Force
+          # Crear jerarquías para que magnum-opus encuentre opus/opus.h
+          foreach ($c in @("opus", "vpx", "aom")) {
+              $path = New-Item -ItemType Directory -Path (Join-Path $vendor $c) -Force
+              Get-ChildItem -Path $vendor -Filter "$c*.h" | Copy-Item -Destination $path -Force
           }
-          
-          echo "VENDOR_PATH=$($vendorDir.FullName)" >> $env:GITHUB_ENV
+          echo "VENDOR_PATH=$($vendor.FullName)" >> $env:GITHUB_ENV
 
-      - name: Hardcode Custom Configuration
+      - name: Hardcode Config
         shell: bash
         run: |
           CONFIG_FILE="libs/hbb_common/src/config.rs"
           sed -i "s|&\[\"rs-ny.rustdesk.com\"\]|&[\"${{ secrets.MY_ID_SERVER }}\"]|g" $CONFIG_FILE
-          sed -i "s|pub const RS_PUB_KEY: \&str = \".*\";|pub const RS_PUB_KEY: \&str = \"${{ secrets.MY_PUBLIC_KEY }}\";|g" $CONFIG_FILE
+          sed -i "s|pub const RS_PUB_KEY: \&str = \".*\";|pub const RS_PUB_KEY: \&str = \"${{ secrets.MY_PUB_KEY }}\";|g" $CONFIG_FILE
           perl -i -0777 -pe 's/pub fn get_rendezvous_server\(\) -> String \{.*?\}/pub fn get_rendezvous_server() -> String { "${{ secrets.MY_ID_SERVER }}:21116".to_string() }/gs' $CONFIG_FILE
           perl -i -0777 -pe 's/pub fn get_relay_server\(\) -> String \{.*?\}/pub fn get_relay_server() -> String { "${{ secrets.MY_RELAY_SERVER }}:21117".to_string() }/gs' $CONFIG_FILE
 
-      - name: Build with Cargo
+      - name: Build
         shell: pwsh
         run: |
-          # Detectar SDK de Windows para stdlib.h [cite: 3]
-          $vsPath = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -property installationPath
-          $msvcInclude = (Get-ChildItem -Path "$vsPath\VC\Tools\MSVC" | Sort-Object Name -Descending | Select-Object -First 1).FullName + "\include"
-          $sdkRoot = "C:\Program Files (x86)\Windows Kits\10\Include"
-          $sdkVer = (Get-ChildItem -Path $sdkRoot | Sort-Object Name -Descending | Select-Object -First 1).Name
+          # Detección de SDK para evitar error stdlib.h
+          $vs = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -property installationPath
+          $msvc = (Get-ChildItem -Path "$vs\VC\Tools\MSVC" | Sort-Object Name -Descending | Select-Object -First 1).FullName + "\include"
+          $sdk = "C:\Program Files (x86)\Windows Kits\10\Include"
+          $ver = (Get-ChildItem -Path $sdk | Sort-Object Name -Descending | Select-Object -First 1).Name
           
-          $env:INCLUDE = "$env:VENDOR_PATH;$msvcInclude;$sdkRoot\$sdkVer\ucrt;$sdkRoot\$sdkVer\shared;$sdkRoot\$sdkVer\um;$env:INCLUDE"
+          $env:INCLUDE = "$env:VENDOR_PATH;$msvc;$sdk\$ver\ucrt;$sdk\$ver\shared;$sdk\$ver\um;$env:INCLUDE"
           $env:LIB = "$env:VCPKG_ROOT_DIR\lib;$env:LIB"
           $env:LIBCLANG_PATH = "C:\Program Files\LLVM\bin"
-          $env:BINDGEN_EXTRA_CLANG_ARGS = "-I`"$env:VENDOR_PATH`" -I`"$msvcInclude`" -I`"$sdkRoot\$sdkVer\ucrt`" -I`"$sdkRoot\$sdkVer\shared`" -I`"$sdkRoot\$sdkVer\um`""
+          $env:BINDGEN_EXTRA_CLANG_ARGS = "-I`"$env:VENDOR_PATH`" -I`"$msvc`" -I`"$sdk\$ver\ucrt`" -I`"$sdk\$ver\shared`" -I`"$sdk\$ver\um`""
           
           $env:VCPKGRS_DYNAMIC = "0"
           $env:OPUS_LIB_PATH = "$env:VCPKG_ROOT_DIR\lib"
@@ -87,7 +81,7 @@ jobs:
           
           cargo build --release --bin rustdesk --features inline
 
-      - name: Upload Binary
+      - name: Upload
         uses: actions/upload-artifact@v4
         with:
           name: RustDesk-Custom-Windows
