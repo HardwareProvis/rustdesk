@@ -21,29 +21,19 @@ jobs:
           targets: x86_64-pc-windows-msvc
 
       - name: Setup vcpkg
-        id: vcpkg_setup
         run: |
-          # Forzamos a vcpkg a usar una ruta conocida y estática
-          $env:VCPKG_DEFAULT_TRIPLET = "x64-windows-static"
-          vcpkg install libvpx libyuv opus
+          # Usamos --classic para evitar el error de modo manifiesto 
+          vcpkg install libvpx libyuv opus --triplet x64-windows-static --classic
           vcpkg integrate install
           
-          # Buscamos la ruta de forma agresiva
-          $vcpkgRoot = (vcpkg root)
-          $installedPath = Join-Path $vcpkgRoot "installed\x64-windows-static"
-          
-          if (Test-Path "$installedPath\include") {
-              echo "VCPKG_REAL_ROOT=$installedPath" >> $env:GITHUB_ENV
-              Write-Host "VCPKG encontrado en: $installedPath"
+          # La ruta en GitHub Actions es C:\vcpkg según el log 
+          $vcpkgPath = "C:\vcpkg\installed\x64-windows-static"
+          if (Test-Path "$vcpkgPath\include") {
+              echo "VCPKG_REAL_ROOT=$vcpkgPath" >> $env:GITHUB_ENV
           } else {
-              # Plan B: Buscar donde GitHub suele ponerlo si 'vcpkg root' falla
-              $fallback = "C:\tools\vcpkg\installed\x64-windows-static"
-              if (Test-Path "$fallback\include") {
-                  echo "VCPKG_REAL_ROOT=$fallback" >> $env:GITHUB_ENV
-              } else {
-                  Write-Error "Fallo crítico: No se encuentra la carpeta include de vcpkg en ninguna ruta."
-                  exit 1
-              }
+              # Fallback por si acaso
+              $fallback = "$env:VCPKG_INSTALLATION_ROOT\installed\x64-windows-static"
+              echo "VCPKG_REAL_ROOT=$fallback" >> $env:GITHUB_ENV
           }
 
       - name: Fix Headers and Paths
@@ -52,16 +42,15 @@ jobs:
           $simpleInclude = "C:\vcpkg_inc"
           if (!(Test-Path $simpleInclude)) { New-Item -ItemType Directory -Path $simpleInclude -Force }
           
-          # Usamos la ruta detectada en el paso anterior
           $vcpkgInclude = Join-Path $env:VCPKG_REAL_ROOT "include"
           Copy-Item -Path "$vcpkgInclude\*" -Destination $simpleInclude -Recurse -Force
           
-          # Crear jerarquías requeridas por magnum-opus y scrap
-          $opusDir = New-Item -ItemType Directory -Path (Join-Path $simpleInclude "opus") -Force
-          $vpxDir = New-Item -ItemType Directory -Path (Join-Path $simpleInclude "vpx") -Force
+          # Crear carpetas requeridas para magnum-opus y scrap
+          $null = New-Item -ItemType Directory -Path "$simpleInclude\opus" -Force
+          $null = New-Item -ItemType Directory -Path "$simpleInclude\vpx" -Force
           
-          Get-ChildItem -Path $simpleInclude -Filter "opus*.h" | Copy-Item -Destination $opusDir -Force
-          Get-ChildItem -Path $simpleInclude -Filter "vpx*.h" | Copy-Item -Destination $vpxDir -Force
+          Get-ChildItem -Path $simpleInclude -Filter "opus*.h" | Copy-Item -Destination "$simpleInclude\opus" -Force
+          Get-ChildItem -Path $simpleInclude -Filter "vpx*.h" | Copy-Item -Destination "$simpleInclude\vpx" -Force
 
       - name: Hardcode Custom Configuration
         shell: bash
@@ -78,6 +67,7 @@ jobs:
           $vcpkgLib = Join-Path $env:VCPKG_REAL_ROOT "lib"
           $simpleInclude = "C:\vcpkg_inc"
           
+          # Detectar MSVC
           $vsPath = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -property installationPath
           $msvcInclude = (Get-ChildItem -Path "$vsPath\VC\Tools\MSVC" | Sort-Object Name -Descending | Select-Object -First 1).FullName + "\include"
           
