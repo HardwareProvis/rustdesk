@@ -24,34 +24,38 @@ jobs:
       - name: Setup vcpkg
         shell: pwsh
         run: |
-          # 1. Eliminar manifiesto para evitar bloqueos
+          # Eliminar manifiesto para evitar bloqueos de modo
           if (Test-Path "vcpkg.json") { Remove-Item "vcpkg.json" -Force }
           
-          # 2. Instalación limpia
+          # Instalación clásica
           vcpkg install libvpx libyuv opus libaom --triplet x64-windows-static --classic
           vcpkg integrate install
           
-          # 3. Definir la variable que magnum-opus está pidiendo
+          # Variables de entorno críticas
           echo "VCPKG_ROOT=C:\vcpkg" >> $env:GITHUB_ENV
           echo "VCPKG_ROOT_DIR=C:\vcpkg\installed\x64-windows-static" >> $env:GITHUB_ENV
 
-      - name: Fix Headers
+      - name: Fix Header Hierarchy
         shell: pwsh
         run: |
-          # Usamos una ruta corta sin espacios para los headers
-          $vendor = New-Item -ItemType Directory -Path "C:\v_inc" -Force
-          $inc = "C:\vcpkg\installed\x64-windows-static\include"
+          # Creamos una carpeta de headers "limpia" en C: para evitar espacios en rutas
+          $cleanInc = New-Item -ItemType Directory -Path "C:\v_inc" -Force
+          $vcpkgInc = "C:\vcpkg\installed\x64-windows-static\include"
           
-          if (Test-Path $inc) {
-              Copy-Item -Path "$inc\*" -Destination $vendor -Recurse -Force
+          # Copiamos todo lo de vcpkg allí
+          Copy-Item -Path "$vcpkgInc\*" -Destination $cleanInc -Recurse -Force
+          
+          # SOLUCIÓN AL ERROR ACTUAL: Crear subcarpetas que los crates esperan
+          # magnum-opus busca <opus/xxx.h>
+          # scrap busca <vpx/xxx.h> y <aom/xxx.h>
+          $codecs = @("opus", "vpx", "aom")
+          foreach ($c in $codecs) {
+              $dir = New-Item -ItemType Directory -Path (Join-Path $cleanInc $c) -Force
+              # Copiamos los archivos que empiezan por el nombre del codec dentro de su carpeta
+              Get-ChildItem -Path $cleanInc -Filter "$c*.h" | Copy-Item -Destination $dir -Force
           }
           
-          # Crear carpetas jerárquicas (opus/opus.h, etc)
-          foreach ($c in @("opus", "vpx", "aom")) {
-              $path = New-Item -ItemType Directory -Path (Join-Path $vendor $c) -Force
-              Get-ChildItem -Path $vendor -Filter "$c*.h" | Copy-Item -Destination $path -Force
-          }
-          echo "VENDOR_PATH=$($vendor.FullName)" >> $env:GITHUB_ENV
+          echo "CLEAN_INCLUDE=C:\v_inc" >> $env:GITHUB_ENV
 
       - name: Hardcode Config
         shell: bash
@@ -65,28 +69,29 @@ jobs:
       - name: Build RustDesk
         shell: pwsh
         run: |
-          # Detectar rutas de sistema
+          # Detectar rutas de MSVC y SDK para evitar error de stdlib.h
           $vs = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -property installationPath
           $msvc = (Get-ChildItem -Path "$vs\VC\Tools\MSVC" | Sort-Object Name -Descending | Select-Object -First 1).FullName + "\include"
           $sdk = "C:\Program Files (x86)\Windows Kits\10\Include"
           $ver = (Get-ChildItem -Path $sdk | Sort-Object Name -Descending | Select-Object -First 1).Name
           
-          # Inyectar rutas
-          $env:VCPKG_ROOT = "C:\vcpkg"
-          $env:INCLUDE = "$env:VENDOR_PATH;$msvc;$sdk\$ver\ucrt;$sdk\$ver\shared;$sdk\$ver\um;$env:INCLUDE"
+          $env:INCLUDE = "$env:CLEAN_INCLUDE;$msvc;$sdk\$ver\ucrt;$sdk\$ver\shared;$sdk\$ver\um;$env:INCLUDE"
           $env:LIB = "C:\vcpkg\installed\x64-windows-static\lib;$env:LIB"
           $env:LIBCLANG_PATH = "C:\Program Files\LLVM\bin"
-          $env:BINDGEN_EXTRA_CLANG_ARGS = "-I`"$env:VENDOR_PATH`" -I`"$msvc`" -I`"$sdk\$ver\ucrt`" -I`"$sdk\$ver\shared`" -I`"$sdk\$ver\um`""
           
-          # Variables de RustDesk
+          # Argumentos de Clang para bindgen
+          $env:BINDGEN_EXTRA_CLANG_ARGS = "-I`"$env:CLEAN_INCLUDE`" -I`"$msvc`" -I`"$sdk\$ver\ucrt`" -I`"$sdk\$ver\shared`" -I`"$sdk\$ver\um`""
+          
+          # Variables para RustDesk
+          $env:VCPKG_ROOT = "C:\vcpkg"
           $env:VCPKGRS_DYNAMIC = "0"
           $env:OPUS_LIB_PATH = "C:\vcpkg\installed\x64-windows-static\lib"
-          $env:OPUS_INCLUDE_PATH = "$env:VENDOR_PATH"
+          $env:OPUS_INCLUDE_PATH = "$env:CLEAN_INCLUDE"
           
           cargo build --release --bin rustdesk --features inline
 
-      - name: Upload Binary
+      - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: RustDesk-Custom-Windows
+          name: RustDesk-Custom
           path: target/release/rustdesk.exe
