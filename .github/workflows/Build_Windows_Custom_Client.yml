@@ -21,48 +21,47 @@ jobs:
           targets: x86_64-pc-windows-msvc
 
       - name: Setup vcpkg
+        id: vcpkg_setup
         run: |
-          vcpkg install libvpx:x64-windows-static libyuv:x64-windows-static opus:x64-windows-static
+          # Forzamos a vcpkg a usar una ruta conocida y estática
+          $env:VCPKG_DEFAULT_TRIPLET = "x64-windows-static"
+          vcpkg install libvpx libyuv opus
           vcpkg integrate install
+          
+          # Buscamos la ruta de forma agresiva
+          $vcpkgRoot = (vcpkg root)
+          $installedPath = Join-Path $vcpkgRoot "installed\x64-windows-static"
+          
+          if (Test-Path "$installedPath\include") {
+              echo "VCPKG_REAL_ROOT=$installedPath" >> $env:GITHUB_ENV
+              Write-Host "VCPKG encontrado en: $installedPath"
+          } else {
+              # Plan B: Buscar donde GitHub suele ponerlo si 'vcpkg root' falla
+              $fallback = "C:\tools\vcpkg\installed\x64-windows-static"
+              if (Test-Path "$fallback\include") {
+                  echo "VCPKG_REAL_ROOT=$fallback" >> $env:GITHUB_ENV
+              } else {
+                  Write-Error "Fallo crítico: No se encuentra la carpeta include de vcpkg en ninguna ruta."
+                  exit 1
+              }
+          }
 
       - name: Fix Headers and Paths
         shell: pwsh
         run: |
-          # 1. Detectar la ruta real de vcpkg instalada
-          $vcpkgRoot = ""
-          $possiblePaths = @("$env:VCPKG_INSTALLATION_ROOT", "C:\vcpkg", "$env:VCPKG_ROOT")
-          foreach ($p in $possiblePaths) {
-              if (Test-Path "$p\installed\x64-windows-static\include") {
-                  $vcpkgRoot = "$p\installed\x64-windows-static"
-                  break
-              }
-          }
-
-          if ($null -eq $vcpkgRoot -or $vcpkgRoot -eq "") {
-              Write-Error "No se pudo encontrar la carpeta de instalación de vcpkg."
-              exit 1
-          }
-
-          # 2. Crear ruta de inclusion simple sin espacios
           $simpleInclude = "C:\vcpkg_inc"
           if (!(Test-Path $simpleInclude)) { New-Item -ItemType Directory -Path $simpleInclude -Force }
           
-          # 3. Copiar headers
-          $vcpkgInclude = Join-Path $vcpkgRoot "include"
+          # Usamos la ruta detectada en el paso anterior
+          $vcpkgInclude = Join-Path $env:VCPKG_REAL_ROOT "include"
           Copy-Item -Path "$vcpkgInclude\*" -Destination $simpleInclude -Recurse -Force
           
-          # 4. Crear subcarpetas requeridas por magnum-opus y scrap
-          $opusDir = Join-Path $simpleInclude "opus"
-          $vpxDir = Join-Path $simpleInclude "vpx"
-          if (!(Test-Path $opusDir)) { New-Item -ItemType Directory -Path $opusDir -Force }
-          if (!(Test-Path $vpxDir)) { New-Item -ItemType Directory -Path $vpxDir -Force }
+          # Crear jerarquías requeridas por magnum-opus y scrap
+          $opusDir = New-Item -ItemType Directory -Path (Join-Path $simpleInclude "opus") -Force
+          $vpxDir = New-Item -ItemType Directory -Path (Join-Path $simpleInclude "vpx") -Force
           
           Get-ChildItem -Path $simpleInclude -Filter "opus*.h" | Copy-Item -Destination $opusDir -Force
           Get-ChildItem -Path $simpleInclude -Filter "vpx*.h" | Copy-Item -Destination $vpxDir -Force
-          
-          # Guardar la ruta de vcpkg para el siguiente paso
-          echo "VCPKG_REAL_ROOT=$vcpkgRoot" >> $env:GITHUB_ENV
-          Write-Host "Ruta vcpkg detectada: $vcpkgRoot"
 
       - name: Hardcode Custom Configuration
         shell: bash
@@ -79,11 +78,9 @@ jobs:
           $vcpkgLib = Join-Path $env:VCPKG_REAL_ROOT "lib"
           $simpleInclude = "C:\vcpkg_inc"
           
-          # Localizar MSVC
           $vsPath = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -property installationPath
           $msvcInclude = (Get-ChildItem -Path "$vsPath\VC\Tools\MSVC" | Sort-Object Name -Descending | Select-Object -First 1).FullName + "\include"
           
-          # Variables de entorno
           $env:INCLUDE = "$simpleInclude;$msvcInclude;$env:INCLUDE"
           $env:LIB = "$vcpkgLib;$env:LIB"
           $env:LIBCLANG_PATH = "C:\Program Files\LLVM\bin"
