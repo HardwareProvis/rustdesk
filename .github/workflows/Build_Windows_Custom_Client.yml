@@ -25,14 +25,22 @@ jobs:
           vcpkg install libvpx:x64-windows-static libyuv:x64-windows-static opus:x64-windows-static
           vcpkg integrate install
 
-      - name: Fix Opus Header Hierarchy
+      - name: Fix Library Header Hierarchy
         shell: pwsh
         run: |
           $vcpkgInclude = "C:\vcpkg\installed\x64-windows-static\include"
+          
+          # Fix para Opus
           $opusDir = Join-Path $vcpkgInclude "opus"
           if (!(Test-Path $opusDir)) { New-Item -ItemType Directory -Path $opusDir -Force }
-          # Copiamos los headers para que 'opus/opus.h' sea válido
           Get-ChildItem -Path $vcpkgInclude -Filter "opus*.h" | Copy-Item -Destination $opusDir -Force
+          
+          # Fix para VPX (Evita el error vpx/vp8.h not found)
+          $vpxDir = Join-Path $vcpkgInclude "vpx"
+          if (!(Test-Path $vpxDir)) { New-Item -ItemType Directory -Path $vpxDir -Force }
+          Get-ChildItem -Path $vcpkgInclude -Filter "vpx*.h" | Copy-Item -Destination $vpxDir -Force
+          
+          Write-Host "Jerarquía de cabeceras corregida para Opus y VPX."
 
       - name: Hardcode Custom Configuration
         shell: bash
@@ -46,38 +54,39 @@ jobs:
       - name: Build with Cargo
         shell: pwsh
         run: |
-          # 1. LOCALIZACIÓN DINÁMICA DE SDK Y MSVC (Para evitar error de stdlib.h)
+          # 1. Localización de rutas
           $vsPath = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -property installationPath
-          $msvcInclude = Get-ChildItem -Path "$vsPath\VC\Tools\MSVC" | Sort-Object Name -Descending | Select-Object -First 1
+          $msvcInclude = (Get-ChildItem -Path "$vsPath\VC\Tools\MSVC" | Sort-Object Name -Descending | Select-Object -First 1).FullName + "\include"
           $sdkIncludeRoot = "C:\Program Files (x86)\Windows Kits\10\Include"
-          $sdkVer = Get-ChildItem -Path $sdkIncludeRoot | Sort-Object Name -Descending | Select-Object -First 1
+          $sdkVer = (Get-ChildItem -Path $sdkIncludeRoot | Sort-Object Name -Descending | Select-Object -First 1).Name
           
           $vcpkgRoot = "C:\vcpkg\installed\x64-windows-static"
           $vcpkgInclude = "$vcpkgRoot\include"
           
-          # 2. CONSTRUCCIÓN DE RUTAS DE INCLUSIÓN
-          # Combinamos vcpkg + MSVC + Windows SDK (UCRT, Shared, UM)
-          $paths = @(
-            $vcpkgInclude,
-            "$($msvcInclude.FullName)\include",
-            "$sdkIncludeRoot\$($sdkVer.Name)\ucrt",
-            "$sdkIncludeRoot\$($sdkVer.Name)\shared",
-            "$sdkIncludeRoot\$($sdkVer.Name)\um"
-          )
-          $env:INCLUDE = ($paths -join ";") + ";" + $env:INCLUDE
+          # 2. Configurar INCLUDE (formato estándar de Windows con comillas si hay espacios)
+          $env:INCLUDE = "$vcpkgInclude;$msvcInclude;$sdkIncludeRoot\$sdkVer\ucrt;$sdkIncludeRoot\$sdkVer\shared;$sdkIncludeRoot\$sdkVer\um"
+          $env:LIB = "$vcpkgRoot\lib"
           
-          # 3. VARIABLES PARA CLANG/BINDGEN
+          # 3. VARIABLES PARA CLANG/BINDGEN (Crucial: Usar comillas escapadas para rutas con espacios)
           $env:LIBCLANG_PATH = "C:\Program Files\LLVM\bin"
-          # Pasamos todas las rutas de inclusión a Clang para que encuentre stdlib.h y opus/
-          $env:BINDGEN_EXTRA_CLANG_ARGS = ($paths | ForEach-Object { "-I$_" }) -join " "
           
-          # 4. VARIABLES RUSTDESK
+          # Construimos los argumentos de Clang envolviendo cada ruta en comillas dobles
+          $clangArgs = @(
+            "-I`"$vcpkgInclude`"",
+            "-I`"$msvcInclude`"",
+            "-I`"$sdkIncludeRoot\$sdkVer\ucrt`"",
+            "-I`"$sdkIncludeRoot\$sdkVer\shared`"",
+            "-I`"$sdkIncludeRoot\$sdkVer\um`""
+          )
+          $env:BINDGEN_EXTRA_CLANG_ARGS = $clangArgs -join " "
+          
+          # 4. Variables RustDesk
           $env:VCPKGRS_DYNAMIC = "0"
           $env:VCPKG_ROOT = "C:\vcpkg"
           $env:OPUS_LIB_PATH = "$vcpkgRoot\lib"
           $env:OPUS_INCLUDE_PATH = $vcpkgInclude
           
-          Write-Host "Rutas de inclusión configuradas: $env:INCLUDE"
+          Write-Host "Clang Args: $env:BINDGEN_EXTRA_CLANG_ARGS"
           cargo build --release --bin rustdesk --features inline
 
       - name: Upload Binary
