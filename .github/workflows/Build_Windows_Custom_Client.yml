@@ -22,11 +22,8 @@ jobs:
 
       - name: Setup vcpkg
         run: |
-          # Forzamos el modo clásico para evitar errores de manifiesto y usamos la ruta estándar
           vcpkg install libvpx libyuv opus --triplet x64-windows-static --classic
           vcpkg integrate install
-          
-          # Definimos las rutas basadas en la ubicación estándar de GitHub Actions
           echo "VCPKG_ROOT=C:\vcpkg" >> $env:GITHUB_ENV
           echo "VCPKG_REAL_ROOT=C:\vcpkg\installed\x64-windows-static" >> $env:GITHUB_ENV
 
@@ -35,17 +32,10 @@ jobs:
         run: |
           $simpleInclude = "C:\vcpkg_inc"
           if (!(Test-Path $simpleInclude)) { New-Item -ItemType Directory -Path $simpleInclude -Force }
-          
-          # Copiamos desde la ruta raíz de vcpkg
           $vcpkgInclude = "C:\vcpkg\installed\x64-windows-static\include"
-          if (Test-Path $vcpkgInclude) {
-              Copy-Item -Path "$vcpkgInclude\*" -Destination $simpleInclude -Recurse -Force
-          }
-          
-          # Crear carpetas requeridas para magnum-opus y scrap
+          if (Test-Path $vcpkgInclude) { Copy-Item -Path "$vcpkgInclude\*" -Destination $simpleInclude -Recurse -Force }
           $null = New-Item -ItemType Directory -Path "$simpleInclude\opus" -Force
           $null = New-Item -ItemType Directory -Path "$simpleInclude\vpx" -Force
-          
           Get-ChildItem -Path $simpleInclude -Filter "opus*.h" | Copy-Item -Destination "$simpleInclude\opus" -Force
           Get-ChildItem -Path $simpleInclude -Filter "vpx*.h" | Copy-Item -Destination "$simpleInclude\vpx" -Force
 
@@ -61,23 +51,29 @@ jobs:
       - name: Build with Cargo
         shell: pwsh
         run: |
-          $vcpkgLib = "C:\vcpkg\installed\x64-windows-static\lib"
-          $simpleInclude = "C:\vcpkg_inc"
-          
-          # Detectar MSVC para evitar error de stdlib.h
+          # 1. Detectar rutas del SDK de Windows y MSVC dinámicamente
           $vsPath = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -property installationPath
           $msvcInclude = (Get-ChildItem -Path "$vsPath\VC\Tools\MSVC" | Sort-Object Name -Descending | Select-Object -First 1).FullName + "\include"
+          $sdkRoot = "C:\Program Files (x86)\Windows Kits\10\Include"
+          $sdkVer = (Get-ChildItem -Path $sdkRoot | Sort-Object Name -Descending | Select-Object -First 1).Name
           
-          # VARIABLES CRÍTICAS PARA MAGNUM-OPUS
+          # Rutas necesarias para que Clang encuentre stdlib.h
+          $ucrtInclude = "$sdkRoot\$sdkVer\ucrt"
+          $sharedInclude = "$sdkRoot\$sdkVer\shared"
+          $umInclude = "$sdkRoot\$sdkVer\um"
+          $simpleInclude = "C:\vcpkg_inc"
+          
+          # 2. Configurar variables de entorno
+          $env:INCLUDE = "$simpleInclude;$msvcInclude;$ucrtInclude;$sharedInclude;$umInclude;$env:INCLUDE"
+          $env:LIB = "C:\vcpkg\installed\x64-windows-static\lib;$env:LIB"
+          $env:LIBCLANG_PATH = "C:\Program Files\LLVM\bin"
+          
+          # 3. Pasar TODAS las rutas a Clang (esto soluciona el error fatal: 'stdlib.h' file not found)
+          $env:BINDGEN_EXTRA_CLANG_ARGS = "-I`"$simpleInclude`" -I`"$msvcInclude`" -I`"$ucrtInclude`" -I`"$sharedInclude`" -I`"$umInclude`""
+          
           $env:VCPKG_ROOT = "C:\vcpkg"
           $env:VCPKGRS_DYNAMIC = "0"
-          $env:INCLUDE = "$simpleInclude;$msvcInclude;$env:INCLUDE"
-          $env:LIB = "$vcpkgLib;$env:LIB"
-          $env:LIBCLANG_PATH = "C:\Program Files\LLVM\bin"
-          $env:BINDGEN_EXTRA_CLANG_ARGS = "-I$simpleInclude"
-          
-          # Variables de RustDesk para encontrar librerías
-          $env:OPUS_LIB_PATH = "$vcpkgLib"
+          $env:OPUS_LIB_PATH = "C:\vcpkg\installed\x64-windows-static\lib"
           $env:OPUS_INCLUDE_PATH = $simpleInclude
           
           cargo build --release --bin rustdesk --features inline
