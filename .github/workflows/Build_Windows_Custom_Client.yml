@@ -14,6 +14,8 @@ jobs:
       - name: Install Dependencies
         run: |
           choco install nasm llvm -y
+          # Descargar Sciter.dll que es necesario para la UI en Windows
+          curl -L https://github.com/c-smile/sciter-sdk/raw/master/bin.win/x64/sciter.dll -o sciter.dll
           echo "C:\Program Files\LLVM\bin" >> $env:GITHUB_PATH
 
       - name: Install Rust (1.75)
@@ -21,7 +23,6 @@ jobs:
         with:
           toolchain: 1.75
           targets: x86_64-pc-windows-msvc
-          components: rustfmt
 
       - name: Setup vcpkg
         shell: pwsh
@@ -31,8 +32,6 @@ jobs:
           git pull --quiet
           ./bootstrap-vcpkg.bat
           cd $env:GITHUB_WORKSPACE
-          
-          # Instalamos los codecs que ya sabemos que funcionan
           $packages = @("opus", "libvpx", "libyuv", "aom")
           foreach ($pkg in $packages) {
               vcpkg install $pkg --triplet x64-windows-static --classic
@@ -72,17 +71,24 @@ jobs:
           $env:INCLUDE = "$env:CLEAN_INCLUDE;$msvc;$sdk\$ver\ucrt;$sdk\$ver\shared;$sdk\$ver\um;$env:INCLUDE"
           $env:LIB = "$env:VCPKG_FINAL_ROOT\lib;$env:LIB"
           $env:LIBCLANG_PATH = "C:\Program Files\LLVM\bin"
-          $env:BINDGEN_EXTRA_CLANG_ARGS = "-I`"$env:CLEAN_INCLUDE`" -I`"$msvc`" -I`"$sdk\$ver\ucrt`" -I`"$sdk\$ver\shared`" -I`"$sdk\$ver\um`""
           
           $env:VCPKGRS_DYNAMIC = "0"
           $env:OPUS_LIB_PATH = "$env:VCPKG_FINAL_ROOT\lib"
           $env:OPUS_INCLUDE_PATH = "$env:CLEAN_INCLUDE"
           
-          # CAMBIO CLAVE: Quitamos --features inline para evitar errores de módulos faltantes
+          # Compilar sin features experimentales para asegurar que la UI funcione
           cargo build --release --bin rustdesk
+
+      - name: Prepare Release
+        shell: pwsh
+        run: |
+          # El ejecutable necesita sciter.dll en la misma carpeta para arrancar
+          Copy-Item "sciter.dll" -Destination "target/release/"
 
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: RustDesk-Custom
-          path: target/release/rustdesk.exe
+          name: RustDesk-Windows-Final
+          path: |
+            target/release/rustdesk.exe
+            target/release/sciter.dll
