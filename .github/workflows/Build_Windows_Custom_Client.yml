@@ -22,19 +22,13 @@ jobs:
 
       - name: Setup vcpkg
         run: |
-          # Usamos --classic para evitar el error de modo manifiesto 
+          # Forzamos el modo clásico para evitar errores de manifiesto y usamos la ruta estándar
           vcpkg install libvpx libyuv opus --triplet x64-windows-static --classic
           vcpkg integrate install
           
-          # La ruta en GitHub Actions es C:\vcpkg según el log 
-          $vcpkgPath = "C:\vcpkg\installed\x64-windows-static"
-          if (Test-Path "$vcpkgPath\include") {
-              echo "VCPKG_REAL_ROOT=$vcpkgPath" >> $env:GITHUB_ENV
-          } else {
-              # Fallback por si acaso
-              $fallback = "$env:VCPKG_INSTALLATION_ROOT\installed\x64-windows-static"
-              echo "VCPKG_REAL_ROOT=$fallback" >> $env:GITHUB_ENV
-          }
+          # Definimos las rutas basadas en la ubicación estándar de GitHub Actions
+          echo "VCPKG_ROOT=C:\vcpkg" >> $env:GITHUB_ENV
+          echo "VCPKG_REAL_ROOT=C:\vcpkg\installed\x64-windows-static" >> $env:GITHUB_ENV
 
       - name: Fix Headers and Paths
         shell: pwsh
@@ -42,8 +36,11 @@ jobs:
           $simpleInclude = "C:\vcpkg_inc"
           if (!(Test-Path $simpleInclude)) { New-Item -ItemType Directory -Path $simpleInclude -Force }
           
-          $vcpkgInclude = Join-Path $env:VCPKG_REAL_ROOT "include"
-          Copy-Item -Path "$vcpkgInclude\*" -Destination $simpleInclude -Recurse -Force
+          # Copiamos desde la ruta raíz de vcpkg
+          $vcpkgInclude = "C:\vcpkg\installed\x64-windows-static\include"
+          if (Test-Path $vcpkgInclude) {
+              Copy-Item -Path "$vcpkgInclude\*" -Destination $simpleInclude -Recurse -Force
+          }
           
           # Crear carpetas requeridas para magnum-opus y scrap
           $null = New-Item -ItemType Directory -Path "$simpleInclude\opus" -Force
@@ -64,19 +61,22 @@ jobs:
       - name: Build with Cargo
         shell: pwsh
         run: |
-          $vcpkgLib = Join-Path $env:VCPKG_REAL_ROOT "lib"
+          $vcpkgLib = "C:\vcpkg\installed\x64-windows-static\lib"
           $simpleInclude = "C:\vcpkg_inc"
           
-          # Detectar MSVC
+          # Detectar MSVC para evitar error de stdlib.h
           $vsPath = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -property installationPath
           $msvcInclude = (Get-ChildItem -Path "$vsPath\VC\Tools\MSVC" | Sort-Object Name -Descending | Select-Object -First 1).FullName + "\include"
           
+          # VARIABLES CRÍTICAS PARA MAGNUM-OPUS
+          $env:VCPKG_ROOT = "C:\vcpkg"
+          $env:VCPKGRS_DYNAMIC = "0"
           $env:INCLUDE = "$simpleInclude;$msvcInclude;$env:INCLUDE"
           $env:LIB = "$vcpkgLib;$env:LIB"
           $env:LIBCLANG_PATH = "C:\Program Files\LLVM\bin"
           $env:BINDGEN_EXTRA_CLANG_ARGS = "-I$simpleInclude"
           
-          $env:VCPKGRS_DYNAMIC = "0"
+          # Variables de RustDesk para encontrar librerías
           $env:OPUS_LIB_PATH = "$vcpkgLib"
           $env:OPUS_INCLUDE_PATH = $simpleInclude
           
