@@ -28,27 +28,41 @@ jobs:
       - name: Fix Headers and Paths
         shell: pwsh
         run: |
-          # Crear una ruta de inclusión simple y sin espacios para evitar errores de Clang
+          # 1. Detectar la ruta real de vcpkg instalada
+          $vcpkgRoot = ""
+          $possiblePaths = @("$env:VCPKG_INSTALLATION_ROOT", "C:\vcpkg", "$env:VCPKG_ROOT")
+          foreach ($p in $possiblePaths) {
+              if (Test-Path "$p\installed\x64-windows-static\include") {
+                  $vcpkgRoot = "$p\installed\x64-windows-static"
+                  break
+              }
+          }
+
+          if ($null -eq $vcpkgRoot -or $vcpkgRoot -eq "") {
+              Write-Error "No se pudo encontrar la carpeta de instalación de vcpkg."
+              exit 1
+          }
+
+          # 2. Crear ruta de inclusion simple sin espacios
           $simpleInclude = "C:\vcpkg_inc"
           if (!(Test-Path $simpleInclude)) { New-Item -ItemType Directory -Path $simpleInclude -Force }
           
-          $vcpkgInclude = "C:\vcpkg\installed\x64-windows-static\include"
-          
-          # Copiar todo a la ruta simple
+          # 3. Copiar headers
+          $vcpkgInclude = Join-Path $vcpkgRoot "include"
           Copy-Item -Path "$vcpkgInclude\*" -Destination $simpleInclude -Recurse -Force
           
-          # Crear las subcarpetas que magnum-opus y scrap necesitan específicamente
+          # 4. Crear subcarpetas requeridas por magnum-opus y scrap
           $opusDir = Join-Path $simpleInclude "opus"
           $vpxDir = Join-Path $simpleInclude "vpx"
-          
           if (!(Test-Path $opusDir)) { New-Item -ItemType Directory -Path $opusDir -Force }
           if (!(Test-Path $vpxDir)) { New-Item -ItemType Directory -Path $vpxDir -Force }
           
-          # Llenar las subcarpetas para que <opus/header.h> y <vpx/header.h> funcionen
           Get-ChildItem -Path $simpleInclude -Filter "opus*.h" | Copy-Item -Destination $opusDir -Force
           Get-ChildItem -Path $simpleInclude -Filter "vpx*.h" | Copy-Item -Destination $vpxDir -Force
           
-          Write-Host "Estructura de cabeceras simplificada en C:\vcpkg_inc"
+          # Guardar la ruta de vcpkg para el siguiente paso
+          echo "VCPKG_REAL_ROOT=$vcpkgRoot" >> $env:GITHUB_ENV
+          Write-Host "Ruta vcpkg detectada: $vcpkgRoot"
 
       - name: Hardcode Custom Configuration
         shell: bash
@@ -62,30 +76,23 @@ jobs:
       - name: Build with Cargo
         shell: pwsh
         run: |
-          # 1. Rutas de vcpkg
-          $vcpkgRoot = "C:\vcpkg\installed\x64-windows-static"
+          $vcpkgLib = Join-Path $env:VCPKG_REAL_ROOT "lib"
           $simpleInclude = "C:\vcpkg_inc"
           
-          # 2. Localizar SDK y MSVC (usando rutas cortas para evitar espacios)
+          # Localizar MSVC
           $vsPath = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -property installationPath
           $msvcInclude = (Get-ChildItem -Path "$vsPath\VC\Tools\MSVC" | Sort-Object Name -Descending | Select-Object -First 1).FullName + "\include"
           
-          # 3. Configurar variables de entorno globales
+          # Variables de entorno
           $env:INCLUDE = "$simpleInclude;$msvcInclude;$env:INCLUDE"
-          $env:LIB = "$vcpkgRoot\lib;$env:LIB"
-          
-          # 4. Configurar Bindgen / Clang (Sin espacios problemáticos)
+          $env:LIB = "$vcpkgLib;$env:LIB"
           $env:LIBCLANG_PATH = "C:\Program Files\LLVM\bin"
-          # Solo pasamos la ruta simplificada para evitar el error 'linker input unused'
           $env:BINDGEN_EXTRA_CLANG_ARGS = "-I$simpleInclude"
           
-          # 5. Variables de RustDesk
           $env:VCPKGRS_DYNAMIC = "0"
-          $env:VCPKG_ROOT = "C:\vcpkg"
-          $env:OPUS_LIB_PATH = "$vcpkgRoot\lib"
+          $env:OPUS_LIB_PATH = "$vcpkgLib"
           $env:OPUS_INCLUDE_PATH = $simpleInclude
           
-          Write-Host "Iniciando compilación con ruta simplificada: $simpleInclude"
           cargo build --release --bin rustdesk --features inline
 
       - name: Upload Binary
