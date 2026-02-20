@@ -12,7 +12,6 @@ jobs:
       - name: Install Dependencies
         run: |
           choco install nasm llvm -y
-          # Añadir LLVM al PATH para bindgen
           echo "C:\Program Files\LLVM\bin" >> $env:GITHUB_PATH
 
       - name: Install Rust (1.75)
@@ -24,7 +23,7 @@ jobs:
 
       - name: Setup vcpkg
         run: |
-          # Añadimos libaom a la lista de instalación
+          # Instalamos todos los codecs necesarios incluyendo libaom
           vcpkg install libvpx libyuv opus libaom --triplet x64-windows-static --classic
           vcpkg integrate install
           echo "VCPKG_ROOT=C:\vcpkg" >> $env:GITHUB_ENV
@@ -47,8 +46,6 @@ jobs:
               $codecDir = New-Item -ItemType Directory -Path (Join-Path $simpleInclude $codec) -Force
               Get-ChildItem -Path $simpleInclude -Filter "$codec*.h" | Copy-Item -Destination $codecDir -Force
           }
-          
-          Write-Host "Jerarquías de cabeceras preparadas para Opus, VPX y AOM."
 
       - name: Hardcode Custom Configuration
         shell: bash
@@ -73,12 +70,12 @@ jobs:
           $umInclude = "$sdkRoot\$sdkVer\um"
           $simpleInclude = "C:\vcpkg_inc"
           
-          # 2. Configurar entorno
+          # 2. Configurar entorno y Bindgen
           $env:INCLUDE = "$simpleInclude;$msvcInclude;$ucrtInclude;$sharedInclude;$umInclude;$env:INCLUDE"
           $env:LIB = "C:\vcpkg\installed\x64-windows-static\lib;$env:LIB"
           $env:LIBCLANG_PATH = "C:\Program Files\LLVM\bin"
           
-          # 3. Argumentos Clang con comillas para rutas con espacios
+          # Argumentos Clang con comillas para rutas con espacios
           $env:BINDGEN_EXTRA_CLANG_ARGS = "-I`"$simpleInclude`" -I`"$msvcInclude`" -I`"$ucrtInclude`" -I`"$sharedInclude`" -I`"$umInclude`""
           
           $env:VCPKG_ROOT = "C:\vcpkg"
