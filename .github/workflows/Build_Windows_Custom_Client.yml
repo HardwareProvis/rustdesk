@@ -23,29 +23,34 @@ jobs:
 
       - name: Setup vcpkg
         run: |
-          # Instalamos todos los codecs necesarios incluyendo libaom
+          # Instalación de librerías en modo clásico para evitar errores de manifiesto
           vcpkg install libvpx libyuv opus libaom --triplet x64-windows-static --classic
           vcpkg integrate install
-          echo "VCPKG_ROOT=C:\vcpkg" >> $env:GITHUB_ENV
-          echo "VCPKG_REAL_ROOT=C:\vcpkg\installed\x64-windows-static" >> $env:GITHUB_ENV
+          
+          # Definimos la ruta de instalación de vcpkg para los siguientes pasos
+          echo "VCPKG_ROOT_DIR=C:\vcpkg\installed\x64-windows-static" >> $env:GITHUB_ENV
 
-      - name: Fix Headers and Paths
+      - name: Fix Headers and Paths (Aislamiento en D:)
         shell: pwsh
         run: |
-          $simpleInclude = "C:\vcpkg_inc"
-          if (!(Test-Path $simpleInclude)) { New-Item -ItemType Directory -Path $simpleInclude -Force }
+          # 1. Creamos una carpeta de dependencias en el disco D: (donde está el código)
+          # Esto evita el error de espacios en "Program Files" que rompe a Clang
+          $vendorDir = New-Item -ItemType Directory -Path "D:\a\rustdesk\vendor" -Force
+          $vcpkgInclude = "$env:VCPKG_ROOT_DIR\include"
           
-          $vcpkgInclude = "C:\vcpkg\installed\x64-windows-static\include"
-          if (Test-Path $vcpkgInclude) {
-              Copy-Item -Path "$vcpkgInclude\*" -Destination $simpleInclude -Recurse -Force
-          }
+          # 2. Copiamos los headers de vcpkg a la nueva ruta
+          Copy-Item -Path "$vcpkgInclude\*" -Destination $vendorDir -Recurse -Force
           
-          # Crear carpetas de jerarquía para todos los codecs problemáticos
+          # 3. SOLUCIÓN AL ERROR DE OPUS: Crear subcarpetas requeridas por RustDesk
+          # El error fatal 'opus/opus_multistream.h' ocurre por falta de esta jerarquía
           $codecs = @("opus", "vpx", "aom")
           foreach ($codec in $codecs) {
-              $codecDir = New-Item -ItemType Directory -Path (Join-Path $simpleInclude $codec) -Force
-              Get-ChildItem -Path $simpleInclude -Filter "$codec*.h" | Copy-Item -Destination $codecDir -Force
+              $codecPath = New-Item -ItemType Directory -Path (Join-Object $vendorDir $codec) -Force
+              Get-ChildItem -Path $vendorDir -Filter "$codec*.h" | Copy-Item -Destination $codecPath -Force
           }
+          
+          echo "VENDOR_PATH=$($vendorDir.FullName)" >> $env:GITHUB_ENV
+          Write-Host "Jerarquías de codecs corregidas en D:\a\rustdesk\vendor"
 
       - name: Hardcode Custom Configuration
         shell: bash
@@ -59,7 +64,7 @@ jobs:
       - name: Build with Cargo
         shell: pwsh
         run: |
-          # 1. Detectar rutas del SDK para evitar el error de stdlib.h
+          # 1. Detectar SDK de Windows para evitar error de 'stdlib.h'
           $vsPath = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -property installationPath
           $msvcInclude = (Get-ChildItem -Path "$vsPath\VC\Tools\MSVC" | Sort-Object Name -Descending | Select-Object -First 1).FullName + "\include"
           $sdkRoot = "C:\Program Files (x86)\Windows Kits\10\Include"
@@ -68,21 +73,23 @@ jobs:
           $ucrtInclude = "$sdkRoot\$sdkVer\ucrt"
           $sharedInclude = "$sdkRoot\$sdkVer\shared"
           $umInclude = "$sdkRoot\$sdkVer\um"
-          $simpleInclude = "C:\vcpkg_inc"
           
-          # 2. Configurar entorno y Bindgen
-          $env:INCLUDE = "$simpleInclude;$msvcInclude;$ucrtInclude;$sharedInclude;$umInclude;$env:INCLUDE"
-          $env:LIB = "C:\vcpkg\installed\x64-windows-static\lib;$env:LIB"
+          # 2. Configurar Entorno de Compilación
+          # Usamos nuestra carpeta vendor en D: para evitar problemas de Clang
+          $env:INCLUDE = "$env:VENDOR_PATH;$msvcInclude;$ucrtInclude;$sharedInclude;$umInclude;$env:INCLUDE"
+          $env:LIB = "$env:VCPKG_ROOT_DIR\lib;$env:LIB"
           $env:LIBCLANG_PATH = "C:\Program Files\LLVM\bin"
           
-          # Argumentos Clang con comillas para rutas con espacios
-          $env:BINDGEN_EXTRA_CLANG_ARGS = "-I`"$simpleInclude`" -I`"$msvcInclude`" -I`"$ucrtInclude`" -I`"$sharedInclude`" -I`"$umInclude`""
+          # 3. Argumentos Clang blindados (solución definitiva para stdlib.h y opus.h)
+          $env:BINDGEN_EXTRA_CLANG_ARGS = "-I`"$env:VENDOR_PATH`" -I`"$msvcInclude`" -I`"$ucrtInclude`" -I`"$sharedInclude`" -I`"$umInclude`""
           
+          # 4. Variables específicas de RustDesk
           $env:VCPKG_ROOT = "C:\vcpkg"
           $env:VCPKGRS_DYNAMIC = "0"
-          $env:OPUS_LIB_PATH = "C:\vcpkg\installed\x64-windows-static\lib"
-          $env:OPUS_INCLUDE_PATH = $simpleInclude
+          $env:OPUS_LIB_PATH = "$env:VCPKG_ROOT_DIR\lib"
+          $env:OPUS_INCLUDE_PATH = "$env:VENDOR_PATH"
           
+          Write-Host "Iniciando compilación en disco D: con vendor path: $env:VENDOR_PATH"
           cargo build --release --bin rustdesk --features inline
 
       - name: Upload Binary
