@@ -14,7 +14,6 @@ jobs:
       - name: Install Dependencies
         run: |
           choco install nasm llvm -y
-          # Descargamos Sciter.dll para la interfaz
           curl -L https://github.com/c-smile/sciter-sdk/raw/master/bin.win/x64/sciter.dll -o sciter.dll
           echo "C:\Program Files\LLVM\bin" >> $env:GITHUB_PATH
 
@@ -33,10 +32,7 @@ jobs:
           git pull --quiet
           ./bootstrap-vcpkg.bat
           cd $env:GITHUB_WORKSPACE
-          $packages = @("opus", "libvpx", "libyuv", "aom")
-          foreach ($pkg in $packages) {
-              vcpkg install $pkg --triplet x64-windows-static --classic
-          }
+          vcpkg install opus libvpx libyuv aom --triplet x64-windows-static --classic
           vcpkg integrate install
           echo "VCPKG_FINAL_ROOT=$env:VCPKG_ROOT\installed\x64-windows-static" >> $env:GITHUB_ENV
 
@@ -61,6 +57,17 @@ jobs:
           perl -i -0777 -pe 's/pub fn get_rendezvous_server\(\) -> String \{.*?\}/pub fn get_rendezvous_server() -> String { "${{ secrets.MY_ID_SERVER }}:21116".to_string() }/gs' $CONFIG_FILE
           perl -i -0777 -pe 's/pub fn get_relay_server\(\) -> String \{.*?\}/pub fn get_relay_server() -> String { "${{ secrets.MY_RELAY_SERVER }}:21117".to_string() }/gs' $CONFIG_FILE
 
+      - name: Generate Inline UI Resources
+        shell: pwsh
+        run: |
+          # Este paso es CRUCIAL. Si el archivo inline.rs no existe, lo creamos 
+          # a partir de los recursos de la carpeta 'src/ui'.
+          if (!(Test-Path "src/ui/inline.rs")) {
+            Write-Host "Generando recursos de UI faltantes..."
+            # Intentamos ejecutar el script de generación si existe
+            if (Test-Path "build.py") { python build.py --inline }
+          }
+
       - name: Build RustDesk
         shell: pwsh
         run: |
@@ -72,25 +79,19 @@ jobs:
           $env:INCLUDE = "$env:CLEAN_INCLUDE;$msvc;$sdk\$ver\ucrt;$sdk\$ver\shared;$sdk\$ver\um;$env:INCLUDE"
           $env:LIB = "$env:VCPKG_FINAL_ROOT\lib;$env:LIB"
           $env:LIBCLANG_PATH = "C:\Program Files\LLVM\bin"
+          $env:BINDGEN_EXTRA_CLANG_ARGS = "-I`"$env:CLEAN_INCLUDE`" -I`"$msvc`" -I`"$sdk\$ver\ucrt`" -I`"$sdk\$ver\shared`" -I`"$sdk\$ver\um`""
           
           $env:VCPKGRS_DYNAMIC = "0"
           $env:OPUS_LIB_PATH = "$env:VCPKG_FINAL_ROOT\lib"
           $env:OPUS_INCLUDE_PATH = "$env:CLEAN_INCLUDE"
           
-          # Intentamos la feature oficial para Windows Sciter
+          # Usamos --features inline pero asegurando que los recursos existan
           cargo build --release --bin rustdesk --features inline
-
-      - name: Prepare Release
-        shell: pwsh
-        run: |
-          if (Test-Path "target/release/rustdesk.exe") {
-            Copy-Item "sciter.dll" -Destination "target/release/"
-          }
 
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: RustDesk-Custom-Final
+          name: RustDesk-Custom-Final-v57
           path: |
             target/release/rustdesk.exe
-            target/release/sciter.dll
+            sciter.dll
