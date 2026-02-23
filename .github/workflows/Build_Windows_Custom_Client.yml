@@ -14,7 +14,7 @@ jobs:
       - name: Install Dependencies
         run: |
           choco install nasm llvm -y
-          # Descargar Sciter.dll que es necesario para la UI en Windows
+          # Descargamos Sciter.dll (necesario para que la ventana no salga blanca)
           curl -L https://github.com/c-smile/sciter-sdk/raw/master/bin.win/x64/sciter.dll -o sciter.dll
           echo "C:\Program Files\LLVM\bin" >> $env:GITHUB_PATH
 
@@ -76,19 +76,18 @@ jobs:
           $env:OPUS_LIB_PATH = "$env:VCPKG_FINAL_ROOT\lib"
           $env:OPUS_INCLUDE_PATH = "$env:CLEAN_INCLUDE"
           
-          # Compilar sin features experimentales para asegurar que la UI funcione
-          cargo build --release --bin rustdesk
+          # CAMBIO CLAVE: Usamos 'view' para que la UI se embeba en el EXE
+          cargo build --release --bin rustdesk --features view
 
       - name: Prepare Release
         shell: pwsh
         run: |
-          # El ejecutable necesita sciter.dll en la misma carpeta para arrancar
           Copy-Item "sciter.dll" -Destination "target/release/"
 
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: RustDesk-Windows-Final
+          name: RustDesk-Windows-Fixed-UI
           path: |
             target/release/rustdesk.exe
             target/release/sciter.dll
