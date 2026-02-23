@@ -24,7 +24,7 @@ jobs:
           targets: x86_64-pc-windows-msvc
           components: rustfmt
 
-      - name: Setup vcpkg
+      - name: Setup vcpkg (Con FFmpeg)
         shell: pwsh
         run: |
           if (Test-Path "vcpkg.json") { Remove-Item "vcpkg.json" -Force }
@@ -32,7 +32,12 @@ jobs:
           git pull --quiet
           ./bootstrap-vcpkg.bat
           cd $env:GITHUB_WORKSPACE
-          vcpkg install opus libvpx libyuv aom --triplet x64-windows-static --classic
+          
+          # Añadimos ffmpeg a la lista de instalación
+          $packages = @("opus", "libvpx", "libyuv", "aom", "ffmpeg")
+          foreach ($pkg in $packages) {
+              vcpkg install $pkg --triplet x64-windows-static --classic
+          }
           vcpkg integrate install
           echo "VCPKG_FINAL_ROOT=$env:VCPKG_ROOT\installed\x64-windows-static" >> $env:GITHUB_ENV
 
@@ -41,11 +46,19 @@ jobs:
         run: |
           $cleanInc = New-Item -ItemType Directory -Path "C:\v_inc" -Force
           $vcpkgInc = "$env:VCPKG_FINAL_ROOT\include"
+          
+          # Copiar todo el contenido de vcpkg a nuestra carpeta limpia
           Copy-Item -Path "$vcpkgInc\*" -Destination $cleanInc -Recurse -Force
+          
+          # Asegurar jerarquías de códecs (Opus, VPX, AOM)
           foreach ($c in @("opus", "vpx", "aom")) {
               $dir = New-Item -ItemType Directory -Path (Join-Path $cleanInc $c) -Force
               Get-ChildItem -Path $cleanInc -Filter "$c*.h" | Copy-Item -Destination $dir -Force
           }
+          
+          # NOTA: FFmpeg ya suele venir en carpetas (libavcodec, libavutil), 
+          # no tocamos su estructura para no romper las referencias cruzadas.
+          
           echo "CLEAN_INCLUDE=C:\v_inc" >> $env:GITHUB_ENV
 
       - name: Hardcode Config
@@ -60,38 +73,33 @@ jobs:
       - name: Build with Official Script
         shell: pwsh
         run: |
-          # Detectar rutas necesarias para Clang/vcpkg
           $vs = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -property installationPath
           $msvc = (Get-ChildItem -Path "$vs\VC\Tools\MSVC" | Sort-Object Name -Descending | Select-Object -First 1).FullName + "\include"
           $sdk = "C:\Program Files (x86)\Windows Kits\10\Include"
           $ver = (Get-ChildItem -Path $sdk | Sort-Object Name -Descending | Select-Object -First 1).Name
           
-          # Configurar variables de entorno para que el script de Python las herede
+          # Variables de entorno críticas para compilar C++ y Rust
           $env:INCLUDE = "$env:CLEAN_INCLUDE;$msvc;$sdk\$ver\ucrt;$sdk\$ver\shared;$sdk\$ver\um;$env:INCLUDE"
           $env:LIB = "$env:VCPKG_FINAL_ROOT\lib;$env:LIB"
           $env:LIBCLANG_PATH = "C:\Program Files\LLVM\bin"
-          $env:BINDGEN_EXTRA_CLANG_ARGS = "-I`"$env:CLEAN_INCLUDE`" -I`"$msvc`" -I`"$sdk\$ver\ucrt`" -I`"$sdk\$ver\shared`" -I`"$sdk\$ver\um`""
           $env:VCPKGRS_DYNAMIC = "0"
           
-          # EJECUCIÓN DEL SCRIPT OFICIAL:
-          # Usamos python build.py para que él gestione la generación de inline.rs y la UI
+          # Forzamos la reconstrucción de la UI antes del build
           python build.py --hwcodec
 
-      - name: Prepare Artifact
+      - name: Final Artifact
         shell: pwsh
         run: |
-          # El script build.py suele poner el resultado en target/release o en una carpeta custom
-          # Buscamos el exe y movemos la dll necesaria
-          $exePath = Get-ChildItem -Path "target\release\rustdesk.exe" -Recurse | Select-Object -First 1
-          if ($exePath) {
-            Copy-Item "sciter.dll" -Destination $exePath.DirectoryName
-            echo "EXE_DIR=$($exePath.DirectoryName)" >> $env:GITHUB_ENV
-          }
+          # Buscar el ejecutable generado (puede estar en target/release o raíz según build.py)
+          $exe = Get-ChildItem -Filter "rustdesk.exe" -Recurse | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+          Copy-Item "sciter.dll" -Destination $exe.DirectoryName
+          echo "PATH_TO_UPLOAD=$($exe.FullName)" >> $env:GITHUB_ENV
+          echo "DLL_TO_UPLOAD=$($exe.DirectoryName)\sciter.dll" >> $env:GITHUB_ENV
 
-      - name: Upload Artifact
+      - name: Upload
         uses: actions/upload-artifact@v4
         with:
-          name: RustDesk-Custom-v58
+          name: RustDesk-Final-v59
           path: |
-            target/release/rustdesk.exe
-            sciter.dll
+            ${{ env.PATH_TO_UPLOAD }}
+            ${{ env.DLL_TO_UPLOAD }}
