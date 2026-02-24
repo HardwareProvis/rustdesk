@@ -24,7 +24,7 @@ jobs:
           targets: x86_64-pc-windows-msvc
           components: rustfmt
 
-      - name: Setup vcpkg (FFmpeg Compatibility)
+      - name: Setup vcpkg
         shell: pwsh
         run: |
           if (Test-Path "vcpkg.json") { Remove-Item "vcpkg.json" -Force }
@@ -32,9 +32,6 @@ jobs:
           git pull --quiet
           ./bootstrap-vcpkg.bat
           cd $env:GITHUB_WORKSPACE
-          
-          # Instalamos las dependencias básicas
-          # Si FFmpeg 7 sigue fallando, compilaremos sin hwcodec para asegurar la UI primero
           vcpkg install opus libvpx libyuv aom --triplet x64-windows-static --classic
           vcpkg integrate install
           echo "VCPKG_FINAL_ROOT=$env:VCPKG_ROOT\installed\x64-windows-static" >> $env:GITHUB_ENV
@@ -60,7 +57,7 @@ jobs:
           perl -i -0777 -pe 's/pub fn get_rendezvous_server\(\) -> String \{.*?\}/pub fn get_rendezvous_server() -> String { "${{ secrets.MY_ID_SERVER }}:21116".to_string() }/gs' $CONFIG_FILE
           perl -i -0777 -pe 's/pub fn get_relay_server\(\) -> String \{.*?\}/pub fn get_relay_server() -> String { "${{ secrets.MY_RELAY_SERVER }}:21117".to_string() }/gs' $CONFIG_FILE
 
-      - name: Build with Official Script
+      - name: Build RustDesk
         shell: pwsh
         run: |
           $vs = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -property installationPath
@@ -73,24 +70,20 @@ jobs:
           $env:LIBCLANG_PATH = "C:\Program Files\LLVM\bin"
           $env:VCPKGRS_DYNAMIC = "0"
           
-          # NOTA: Eliminamos --hwcodec temporalmente para asegurar que la UI se genere bien
-          # Una vez que la pantalla deje de ser blanca, reintroduciremos los codecs.
-          python build.py
+          # Usamos --skip-portable-pack para que no falle al final
+          python build.py --skip-portable-pack
 
-      - name: Final Artifact
+      - name: Collect Results
         shell: pwsh
         run: |
-          $exe = Get-ChildItem -Filter "rustdesk.exe" -Recurse | Sort-Object LastWriteTime -Descending | Select-Object -First 1
-          if ($exe) {
-            Copy-Item "sciter.dll" -Destination $exe.DirectoryName
-            echo "PATH_TO_UPLOAD=$($exe.FullName)" >> $env:GITHUB_ENV
-            echo "DLL_TO_UPLOAD=$($exe.DirectoryName)\sciter.dll" >> $env:GITHUB_ENV
-          }
+          # Buscamos el .exe compilado y lo ponemos junto a la dll
+          $outDir = "release_files"
+          New-Item -ItemType Directory -Path $outDir
+          Copy-Item "target\release\rustdesk.exe" -Destination "$outDir\rustdesk.exe"
+          Copy-Item "sciter.dll" -Destination "$outDir\sciter.dll"
 
-      - name: Upload
+      - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: RustDesk-UI-Fixed-v60
-          path: |
-            ${{ env.PATH_TO_UPLOAD }}
-            ${{ env.DLL_TO_UPLOAD }}
+          name: RustDesk-Final-Ready
+          path: release_files/
