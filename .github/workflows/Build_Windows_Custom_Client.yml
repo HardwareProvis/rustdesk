@@ -24,7 +24,7 @@ jobs:
           targets: x86_64-pc-windows-msvc
           components: rustfmt
 
-      - name: Setup vcpkg (Con FFmpeg)
+      - name: Setup vcpkg (FFmpeg Compatibility)
         shell: pwsh
         run: |
           if (Test-Path "vcpkg.json") { Remove-Item "vcpkg.json" -Force }
@@ -33,11 +33,9 @@ jobs:
           ./bootstrap-vcpkg.bat
           cd $env:GITHUB_WORKSPACE
           
-          # Añadimos ffmpeg a la lista de instalación
-          $packages = @("opus", "libvpx", "libyuv", "aom", "ffmpeg")
-          foreach ($pkg in $packages) {
-              vcpkg install $pkg --triplet x64-windows-static --classic
-          }
+          # Instalamos las dependencias básicas
+          # Si FFmpeg 7 sigue fallando, compilaremos sin hwcodec para asegurar la UI primero
+          vcpkg install opus libvpx libyuv aom --triplet x64-windows-static --classic
           vcpkg integrate install
           echo "VCPKG_FINAL_ROOT=$env:VCPKG_ROOT\installed\x64-windows-static" >> $env:GITHUB_ENV
 
@@ -46,19 +44,11 @@ jobs:
         run: |
           $cleanInc = New-Item -ItemType Directory -Path "C:\v_inc" -Force
           $vcpkgInc = "$env:VCPKG_FINAL_ROOT\include"
-          
-          # Copiar todo el contenido de vcpkg a nuestra carpeta limpia
           Copy-Item -Path "$vcpkgInc\*" -Destination $cleanInc -Recurse -Force
-          
-          # Asegurar jerarquías de códecs (Opus, VPX, AOM)
           foreach ($c in @("opus", "vpx", "aom")) {
               $dir = New-Item -ItemType Directory -Path (Join-Path $cleanInc $c) -Force
               Get-ChildItem -Path $cleanInc -Filter "$c*.h" | Copy-Item -Destination $dir -Force
           }
-          
-          # NOTA: FFmpeg ya suele venir en carpetas (libavcodec, libavutil), 
-          # no tocamos su estructura para no romper las referencias cruzadas.
-          
           echo "CLEAN_INCLUDE=C:\v_inc" >> $env:GITHUB_ENV
 
       - name: Hardcode Config
@@ -78,28 +68,29 @@ jobs:
           $sdk = "C:\Program Files (x86)\Windows Kits\10\Include"
           $ver = (Get-ChildItem -Path $sdk | Sort-Object Name -Descending | Select-Object -First 1).Name
           
-          # Variables de entorno críticas para compilar C++ y Rust
           $env:INCLUDE = "$env:CLEAN_INCLUDE;$msvc;$sdk\$ver\ucrt;$sdk\$ver\shared;$sdk\$ver\um;$env:INCLUDE"
           $env:LIB = "$env:VCPKG_FINAL_ROOT\lib;$env:LIB"
           $env:LIBCLANG_PATH = "C:\Program Files\LLVM\bin"
           $env:VCPKGRS_DYNAMIC = "0"
           
-          # Forzamos la reconstrucción de la UI antes del build
-          python build.py --hwcodec
+          # NOTA: Eliminamos --hwcodec temporalmente para asegurar que la UI se genere bien
+          # Una vez que la pantalla deje de ser blanca, reintroduciremos los codecs.
+          python build.py
 
       - name: Final Artifact
         shell: pwsh
         run: |
-          # Buscar el ejecutable generado (puede estar en target/release o raíz según build.py)
           $exe = Get-ChildItem -Filter "rustdesk.exe" -Recurse | Sort-Object LastWriteTime -Descending | Select-Object -First 1
-          Copy-Item "sciter.dll" -Destination $exe.DirectoryName
-          echo "PATH_TO_UPLOAD=$($exe.FullName)" >> $env:GITHUB_ENV
-          echo "DLL_TO_UPLOAD=$($exe.DirectoryName)\sciter.dll" >> $env:GITHUB_ENV
+          if ($exe) {
+            Copy-Item "sciter.dll" -Destination $exe.DirectoryName
+            echo "PATH_TO_UPLOAD=$($exe.FullName)" >> $env:GITHUB_ENV
+            echo "DLL_TO_UPLOAD=$($exe.DirectoryName)\sciter.dll" >> $env:GITHUB_ENV
+          }
 
       - name: Upload
         uses: actions/upload-artifact@v4
         with:
-          name: RustDesk-Final-v59
+          name: RustDesk-UI-Fixed-v60
           path: |
             ${{ env.PATH_TO_UPLOAD }}
             ${{ env.DLL_TO_UPLOAD }}
