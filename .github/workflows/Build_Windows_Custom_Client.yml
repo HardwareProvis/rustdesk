@@ -14,7 +14,7 @@ jobs:
       - name: Install Dependencies
         run: |
           choco install nasm llvm python -y
-          curl -L https://github.com/c-smile/sciter-sdk/raw/master/bin.win/x64/sciter.dll -o sciter.dll
+          curl -L https://github.com/nicoschmitt/sciter-dll/releases/download/latest/sciter.dll -o sciter.dll
           echo "C:\Program Files\LLVM\bin" >> $env:GITHUB_PATH
 
       - name: Install Rust (1.75)
@@ -32,7 +32,7 @@ jobs:
           git pull --quiet
           ./bootstrap-vcpkg.bat
           cd $env:GITHUB_WORKSPACE
-          vcpkg install opus libvpx libyuv aom --triplet x64-windows-static --classic
+          vcpkg install opus libvpx libyuv aom --triplet x64-windows-static
           vcpkg integrate install
           echo "VCPKG_FINAL_ROOT=$env:VCPKG_ROOT\installed\x64-windows-static" >> $env:GITHUB_ENV
 
@@ -48,14 +48,42 @@ jobs:
           }
           echo "CLEAN_INCLUDE=C:\v_inc" >> $env:GITHUB_ENV
 
-      - name: Hardcode Config
+      - name: Hardcode Custom Server Config
         shell: bash
         run: |
           CONFIG_FILE="libs/hbb_common/src/config.rs"
-          sed -i "s|&\[\"rs-ny.rustdesk.com\"\]|&[\"${{ secrets.MY_ID_SERVER }}\"]|g" $CONFIG_FILE
-          sed -i "s|pub const RS_PUB_KEY: \&str = \".*\";|pub const RS_PUB_KEY: \&str = \"${{ secrets.MY_PUBLIC_KEY }}\";|g" $CONFIG_FILE
-          perl -i -0777 -pe 's/pub fn get_rendezvous_server\(\) -> String \{.*?\}/pub fn get_rendezvous_server() -> String { "${{ secrets.MY_ID_SERVER }}:21116".to_string() }/gs' $CONFIG_FILE
-          perl -i -0777 -pe 's/pub fn get_relay_server\(\) -> String \{.*?\}/pub fn get_relay_server() -> String { "${{ secrets.MY_RELAY_SERVER }}:21117".to_string() }/gs' $CONFIG_FILE
+          
+          # Reemplazar RENDEZVOUS_SERVERS (funciona con cualquier valor actual)
+          sed -i 's|pub const RENDEZVOUS_SERVERS: &\[&str\] = &\[.*\];|pub const RENDEZVOUS_SERVERS: \&[\&str] = \&["${{ secrets.ID_SERVER }}"];|g' $CONFIG_FILE
+          
+          # Reemplazar RS_PUB_KEY (funciona con cualquier valor actual)
+          sed -i 's|pub const RS_PUB_KEY: &str = ".*";|pub const RS_PUB_KEY: \&str = "${{ secrets.RS_PUB_KEY }}";|g' $CONFIG_FILE
+          
+          # Reemplazar get_rendezvous_server() - usa perl para multilinea
+          perl -i -0777 -pe 's/(pub fn get_rendezvous_server\(\) -> String \{)[^}]*\}/\1 "${{ secrets.ID_SERVER }}:21116".to_string() }/gs' $CONFIG_FILE
+          
+          # Verificar los cambios
+          echo "=== Verificando configuración hardcodeada ==="
+          grep -n "RENDEZVOUS_SERVERS" $CONFIG_FILE | head -3
+          grep -n "RS_PUB_KEY" $CONFIG_FILE | head -3
+          grep -A1 "pub fn get_rendezvous_server" $CONFIG_FILE | head -3
+
+      - name: Generate Sciter Inline Resources
+        shell: pwsh
+        run: |
+          # Este paso genera src/ui/inline.rs con los recursos HTML/CSS embebidos
+          # Sin esto, la interfaz Sciter muestra pantalla en blanco
+          python res/inline-sciter.py
+          
+          # Verificar que se generó correctamente
+          if (Test-Path "src/ui/inline.rs") {
+              Write-Host "inline.rs generado correctamente"
+              $size = (Get-Item "src/ui/inline.rs").Length
+              Write-Host "Tamaño: $size bytes"
+          } else {
+              Write-Error "Error: No se pudo generar src/ui/inline.rs"
+              exit 1
+          }
 
       - name: Build RustDesk
         shell: pwsh
@@ -70,8 +98,8 @@ jobs:
           $env:LIBCLANG_PATH = "C:\Program Files\LLVM\bin"
           $env:VCPKGRS_DYNAMIC = "0"
           
-          # Saltamos el empaquetado portátil para evitar el error de ruta '../../resources'
-          python build.py --skip-portable-pack
+          # Compilar con la feature 'inline' para embeber los recursos de Sciter
+          cargo build --release --features inline
 
       - name: Organize Artifacts
         shell: pwsh
@@ -79,19 +107,20 @@ jobs:
           $outDir = "release_files"
           if (!(Test-Path $outDir)) { New-Item -ItemType Directory -Path $outDir }
           
-          # Localizamos el binario en la carpeta de release de Rust
-          $exe = Get-ChildItem -Path "target\release\rustdesk.exe" -Recurse | Select-Object -First 1
-          if ($exe) {
-              Copy-Item $exe.FullName -Destination "$outDir\rustdesk.exe"
+          # Copiar el binario principal
+          $exe = "target\release\rustdesk.exe"
+          if (Test-Path $exe) {
+              Copy-Item $exe -Destination "$outDir\rustdesk.exe"
               Copy-Item "sciter.dll" -Destination "$outDir\sciter.dll"
-              Write-Host "Binario encontrado y copiado a $outDir"
+              Write-Host "Binario y sciter.dll copiados a $outDir"
           } else {
               Write-Error "No se encontró el ejecutable rustdesk.exe en target/release"
+              Get-ChildItem -Path "target\release" -Filter "*.exe" | ForEach-Object { Write-Host $_.Name }
               exit 1
           }
 
       - name: Upload Final Binary
         uses: actions/upload-artifact@v4
         with:
-          name: RustDesk-Custom-v61
+          name: RustDesk-Custom-Windows
           path: release_files/
