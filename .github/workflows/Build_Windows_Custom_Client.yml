@@ -19,17 +19,41 @@ jobs:
       - name: Download Sciter DLL
         shell: pwsh
         run: |
-          # Descargar sciter.dll x64 usando la misma fuente que el workflow oficial
-          $url = "https://github.com/c-smile/sciter-sdk/raw/master/bin.win/x64/sciter.dll"
-          Invoke-WebRequest -Uri $url -OutFile "sciter.dll" -UseBasicParsing
+          # Descargar el SDK oficial de Sciter.TIS desde sciter.com
+          $sdkUrl = "https://sciter.com/sdk/sciter-sdk.zip"
+          Write-Host "Descargando SDK de Sciter desde $sdkUrl..."
+          Invoke-WebRequest -Uri $sdkUrl -OutFile "sciter-sdk.zip" -UseBasicParsing
           
-          # Verificar que se descargó correctamente (debe ser > 5MB)
+          # Extraer solo la DLL de 64 bits
+          Write-Host "Extrayendo sciter.dll x64..."
+          Expand-Archive -Path "sciter-sdk.zip" -DestinationPath "sciter-sdk-temp" -Force
+          
+          # Buscar la DLL en la estructura del SDK (puede estar en bin/64 o bin.win/x64)
+          $dllPath = Get-ChildItem -Path "sciter-sdk-temp" -Recurse -Filter "sciter.dll" | 
+                     Where-Object { $_.DirectoryName -match "64|x64" } | 
+                     Select-Object -First 1
+          
+          if ($dllPath) {
+              Copy-Item $dllPath.FullName -Destination "sciter.dll" -Force
+              $size = (Get-Item "sciter.dll").Length
+              Write-Host "sciter.dll extraido correctamente: $size bytes"
+              Write-Host "Origen: $($dllPath.FullName)"
+          } else {
+              Write-Error "No se encontró sciter.dll x64 en el SDK"
+              Get-ChildItem -Path "sciter-sdk-temp" -Recurse -Filter "*.dll" | ForEach-Object { Write-Host $_.FullName }
+              exit 1
+          }
+          
+          # Verificar tamaño (debe ser > 5MB)
           $size = (Get-Item "sciter.dll").Length
-          Write-Host "sciter.dll descargado: $size bytes"
           if ($size -lt 5000000) {
               Write-Error "Error: sciter.dll parece corrupto o incompleto (tamaño: $size bytes)"
               exit 1
           }
+          
+          # Limpiar
+          Remove-Item "sciter-sdk.zip" -Force
+          Remove-Item "sciter-sdk-temp" -Recurse -Force
 
       - name: Install Rust (1.75)
         uses: dtolnay/rust-toolchain@master
