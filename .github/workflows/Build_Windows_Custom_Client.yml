@@ -14,7 +14,8 @@ jobs:
       - name: Install Dependencies
         run: |
           choco install nasm llvm python -y
-          curl -L https://github.com/nicoschmitt/sciter-dll/releases/download/latest/sciter.dll -o sciter.dll
+          # Descargar sciter.dll x64 del SDK oficial de c-smile
+          curl -L https://raw.githubusercontent.com/c-smile/sciter-sdk/master/bin.win/x64/sciter.dll -o sciter.dll
           echo "C:\Program Files\LLVM\bin" >> $env:GITHUB_PATH
 
       - name: Install Rust (1.75)
