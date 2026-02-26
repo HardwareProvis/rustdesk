@@ -70,7 +70,7 @@ jobs:
           $env:LIBCLANG_PATH = "C:\Program Files\LLVM\bin"
           $env:VCPKGRS_DYNAMIC = "0"
           
-          # Forzamos que ignore el empaquetado portátil que da error de ruta
+          # Saltamos el empaquetado portátil para evitar el error de ruta '../../resources'
           python build.py --skip-portable-pack
 
       - name: Organize Artifacts
@@ -79,14 +79,14 @@ jobs:
           $outDir = "release_files"
           if (!(Test-Path $outDir)) { New-Item -ItemType Directory -Path $outDir }
           
-          # Buscamos el ejecutable generado en la carpeta target
+          # Localizamos el binario en la carpeta de release de Rust
           $exe = Get-ChildItem -Path "target\release\rustdesk.exe" -Recurse | Select-Object -First 1
           if ($exe) {
               Copy-Item $exe.FullName -Destination "$outDir\rustdesk.exe"
               Copy-Item "sciter.dll" -Destination "$outDir\sciter.dll"
-              Write-Host "Binarios localizados y organizados."
+              Write-Host "Binario encontrado y copiado a $outDir"
           } else {
-              Write-Error "No se pudo encontrar el archivo rustdesk.exe"
+              Write-Error "No se encontró el ejecutable rustdesk.exe en target/release"
               exit 1
           }
 
